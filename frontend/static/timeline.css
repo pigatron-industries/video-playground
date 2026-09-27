@@ -1,9 +1,18 @@
+/* The timeline lives in a full-page-width bar at the bottom. It scrolls
+   horizontally on its own (independent of the rest of the page) while the
+   canvas is allowed to be as wide as the total duration demands. */
 #canvasWrap {
+  width: 100%;
+  height: 100%;
   overflow-x: auto;
-  padding: 24px 16px;
+  overflow-y: hidden;
+  display: flex;
+  align-items: center;      /* vertically center the canvas in the bar */
   background: #1a1a1e;
+  box-sizing: border-box;
 }
 #timeline {
   display: block;
+  flex-shrink: 0;           /* never compress below its natural width */
   cursor: crosshair;
 }

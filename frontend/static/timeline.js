@@ -34,6 +34,7 @@ window.setKeyframeTime = () => {};
 window.setKeyframeImage = () => {};
 window.deleteKeyframe = () => {};
 window.exportPlan = () => {};
+window.setSegmentPreview = () => {};
 
 function waitForElements(cb) {
   const c = document.getElementById('timeline');
@@ -207,6 +208,14 @@ function init() {
     keyframes = keyframes.filter(k => k.id !== id);
     if (selectedId === id) selectedId = null;
     resizeCanvas();
+  };
+
+  window.setSegmentPreview = (url) => {
+    const v = document.getElementById('segPreview');
+    if (v) {
+      v.src = url;
+      v.load();
+    }
   };
 
   window.exportPlan = () => {

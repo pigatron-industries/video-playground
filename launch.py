@@ -13,7 +13,7 @@ from nicegui import app as nicegui_app
 from nicegui import ui
 
 from backend.api import router as api_router
-from frontend.app import build_page
+from frontend.app import PORT, build_page
 
 nicegui_app.include_router(api_router, prefix='/api')
 
@@ -28,7 +28,8 @@ if __name__ in {'__main__', '__mp_main__'}:
     ui.run(
         title='Keyframe App',
         host='127.0.0.1',
-        port=8080,
+        port=PORT,
         native=False,  # flip to True for a native window (needs pywebview)
         reload=False,
+        dark=True
     )
