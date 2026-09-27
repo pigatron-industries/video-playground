@@ -102,7 +102,7 @@ def build_page() -> None:
             # i.e. there is no scrollbar. Pin the wrapper to the bar's width and
             # drop its min-width floor so #canvasWrap becomes the scroll region.
             with ui.column().classes('w-full').style(
-                'height: 180px; flex-shrink: 0; overflow: hidden; '
+                'height: 360px; flex-shrink: 0; overflow: hidden; '
                 'border-top: 1px solid #34343c; background:#1a1a1e'
             ) as _timeline:
                 ui.html('<div id="canvasWrap"><canvas id="timeline"></canvas></div>') \

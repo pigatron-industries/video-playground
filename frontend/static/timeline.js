@@ -55,7 +55,7 @@ function xToTime(x) { return Math.max(0, (x - 40) / PPS); }
 
 function resizeCanvas() {
   canvas.width = Math.max(wrap.clientWidth, totalDuration * PPS + 80);
-  canvas.height = 140;
+  canvas.height = 320;
   draw();
 }
 
