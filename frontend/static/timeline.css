@@ -1,0 +1,9 @@
+#canvasWrap {
+  overflow-x: auto;
+  padding: 24px 16px;
+  background: #1a1a1e;
+}
+#timeline {
+  display: block;
+  cursor: crosshair;
+}
