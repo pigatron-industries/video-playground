@@ -14,6 +14,8 @@ Page layout (three sections):
                  scrollable horizontally
 """
 
+import json
+
 import httpx
 from nicegui import ui
 
@@ -37,7 +39,9 @@ def build_page() -> None:
             """
         )
 
-        project_id_holder = {'id': None}
+        # The currently-open project folder (set by "Open Project"). Gates
+        # save/upload/concat client-side so we can show a friendly message.
+        project_folder = {'path': None}
 
         # One full-viewport flex column: header (fixed) / top (form + preview,
         # flex-grow) / timeline (fixed at the bottom).
@@ -50,10 +54,11 @@ def build_page() -> None:
                 'height: 56px; padding: 0 16px; background:#232328; flex-shrink: 0; gap: 8px'
             ) as _header:
                 ui.label('Keyframe Timeline').classes('text-subtitle2')
-                total_duration = ui.number('Total length (s)', value=60, min=1).props('dense outlined dark').classes('w-32')
+                folder_label = ui.label('No project open').classes('text-caption text-grey')
                 ui.space()
-                ui.button('Export / Save', on_click=lambda: ui.run_javascript('window.exportPlan()'))
-                ui.button('Concat Final Video', on_click=lambda: concat_final(project_id_holder['id']))
+                ui.button('Open Project', icon='folder_open', on_click=lambda: open_project()).props('outline')
+                ui.button('Save', icon='save', on_click=lambda: do_save())
+                ui.button('Concat Final Video', icon='movie', on_click=lambda: concat_final())
 
             # ---- top: editor form (left) + preview window (right) --------
             with ui.row().classes('w-full no-wrap').style(
@@ -93,6 +98,14 @@ def build_page() -> None:
                     preview_image = ui.image().style('width:100%; aspect-ratio:16/9; background:#232328')
                     preview_image.visible = False
 
+            # ---- timeline toolbar: control row sitting directly above the canvas ----
+            with ui.row().classes('items-center w-full no-wrap').style(
+                'height: 44px; padding: 0 16px; background:#232328; flex-shrink: 0; gap: 8px; '
+                'border-top: 1px solid #34343c'
+            ) as _timeline_toolbar:
+                total_duration = ui.number('Total length (s)', value=60, min=1).props('dense outlined dark').classes('w-32')
+                ui.space()
+
             # ---- bottom: timeline, full page width, independent h-scroll --
             # The ui.html element renders a wrapper <div> that is the real flex
             # item of the .nicegui-column below. That column uses
@@ -120,7 +133,6 @@ def build_page() -> None:
                 resp = await client.get(api_url('/api/ui/select'))
                 state = resp.json()
 
-            project_id_holder['id'] = state.get('project_id')
             kf_id = state.get('keyframe_id')
             kf_time_val = state.get('time', 0)
 
@@ -161,7 +173,6 @@ def build_page() -> None:
 
         def on_prompt_change(e):
             if current_selection['keyframe_id']:
-                import json
                 ui.run_javascript(
                     f"window.setKeyframePrompt('{current_selection['keyframe_id']}', {json.dumps(e.value)})"
                 )
@@ -170,13 +181,12 @@ def build_page() -> None:
         kf_prompt.on_value_change(on_prompt_change)
 
         async def handle_upload(e):
-            pid = project_id_holder['id']
-            if not pid:
-                ui.notify('Save/export the project once before adding images.', type='warning')
+            if not project_folder['path']:
+                ui.notify('Open a project folder before adding images.', type='warning')
                 return
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
-                    api_url(f'/api/projects/{pid}/images'),
+                    api_url('/api/projects/images'),
                     files={'file': (e.name, e.content.read())},
                 )
             result = resp.json()
@@ -204,16 +214,38 @@ def build_page() -> None:
             #   ui.run_javascript(f"window.setSegmentPreview('<url>')")
             render_status.text = 'TODO: resolve segment id for this keyframe, then POST /render'
 
-        async def concat_final(pid):
-            if not pid:
-                ui.notify('No project saved yet.', type='warning')
+        async def concat_final():
+            if not project_folder['path']:
+                ui.notify('Open a project folder first.', type='warning')
                 return
             async with httpx.AsyncClient() as client:
-                resp = await client.post(api_url(f'/api/projects/{pid}/concat'))
+                resp = await client.post(api_url('/api/projects/concat'))
             if resp.status_code == 200:
                 ui.notify(f"Final video: {resp.json()['output_path']}")
             else:
                 ui.notify(f'Concat failed: {resp.text}', type='negative')
+
+        def do_save():
+            if not project_folder['path']:
+                ui.notify('Open a project folder before saving.', type='warning')
+                return
+            ui.run_javascript('window.exportPlan()')
+
+        async def open_project():
+            # Server-side folder dialog (see path_picker.py) — the browser can't
+            # expose real filesystem paths, so we walk the server's own tree.
+            from frontend.path_picker import pick_folder
+            path = await pick_folder()
+            if not path:
+                return
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(api_url('/api/projects/open'), json={'path': path})
+            result = resp.json()
+            project_folder['path'] = result['path']
+            folder_label.text = result['path']
+            # Restore any existing timeline.json into the canvas.
+            ui.run_javascript(f"window.loadPlan({json.dumps(result['plan'])})")
+            ui.notify(f'Opened project: {result["path"]}', type='positive')
 
         total_duration.on_value_change(
             lambda e: ui.run_javascript(f'window.setTotalDuration({e.value})')

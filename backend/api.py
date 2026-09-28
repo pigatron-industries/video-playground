@@ -1,11 +1,9 @@
-import uuid
-
 from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from backend.models import RenderPlan, Segment, SelectionState
+from backend.models import OpenProjectRequest, RenderPlan, Segment, SelectionState
 from backend.render import concat_segments, run_render
-from backend.storage import load_plan, project_dir, save_image, save_plan
+from backend.storage import load_plan, project_dir, save_image, save_plan, set_active_folder
 
 router = APIRouter()
 
@@ -16,32 +14,44 @@ _selection = SelectionState()
 # ---------------------------------------------------------------------------
 # Projects / plans
 # ---------------------------------------------------------------------------
+@router.post("/projects/open")
+def open_project(req: OpenProjectRequest) -> dict:
+    """Point the app at a project folder (creating it if needed) and, if a
+    timeline.json already lives there, load it back so the UI can restore
+    the canvas. Returns the resolved folder path plus the plan."""
+    folder = set_active_folder(req.path)
+    plan_path = folder / "timeline.json"
+    if plan_path.exists():
+        plan = RenderPlan.model_validate_json(plan_path.read_text())
+    else:
+        plan = RenderPlan()
+    return {"path": str(folder), "plan": plan}
+
+
 @router.post("/projects")
-def create_or_update_project(plan: RenderPlan) -> RenderPlan:
-    if not plan.project_id:
-        plan.project_id = str(uuid.uuid4())
+def save_project(plan: RenderPlan) -> RenderPlan:
     save_plan(plan)
     return plan
 
 
-@router.get("/projects/{project_id}")
-def get_project(project_id: str) -> RenderPlan:
-    return load_plan(project_id)
+@router.get("/projects")
+def get_project() -> RenderPlan:
+    return load_plan()
 
 
 # ---------------------------------------------------------------------------
 # Images
 # ---------------------------------------------------------------------------
-@router.post("/projects/{project_id}/images")
-async def upload_image(project_id: str, file: UploadFile) -> dict:
+@router.post("/projects/images")
+async def upload_image(file: UploadFile) -> dict:
     data = await file.read()
-    dest = save_image(project_id, file.filename, data)
-    return {"path": str(dest), "url": f"/api/projects/{project_id}/images/{file.filename}"}
+    dest = save_image(file.filename, data)
+    return {"path": str(dest), "url": f"/api/projects/images/{file.filename}"}
 
 
-@router.get("/projects/{project_id}/images/{filename}")
-def get_image(project_id: str, filename: str) -> FileResponse:
-    path = project_dir(project_id) / "images" / filename
+@router.get("/projects/images/{filename}")
+def get_image(filename: str) -> FileResponse:
+    path = project_dir() / "images" / filename
     if not path.exists():
         raise HTTPException(404, "Image not found")
     return FileResponse(path)
@@ -50,31 +60,31 @@ def get_image(project_id: str, filename: str) -> FileResponse:
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
-@router.post("/projects/{project_id}/segments/{segment_id}/render")
-def render_segment(project_id: str, segment_id: str, background_tasks: BackgroundTasks) -> dict:
-    plan = load_plan(project_id)
+@router.post("/projects/segments/{segment_id}/render")
+def render_segment(segment_id: str, background_tasks: BackgroundTasks) -> dict:
+    plan = load_plan()
     segment = next((s for s in plan.segments if s.id == segment_id), None)
     if not segment:
-        raise HTTPException(404, f"No segment {segment_id} in project {project_id}")
+        raise HTTPException(404, f"No segment {segment_id} in the open project")
 
     segment.status = "queued"
     save_plan(plan)
-    background_tasks.add_task(run_render, project_id, segment_id)
+    background_tasks.add_task(run_render, segment_id)
     return {"status": "queued", "segment_id": segment_id}
 
 
-@router.get("/projects/{project_id}/segments/{segment_id}/status")
-def segment_status(project_id: str, segment_id: str) -> Segment:
-    plan = load_plan(project_id)
+@router.get("/projects/segments/{segment_id}/status")
+def segment_status(segment_id: str) -> Segment:
+    plan = load_plan()
     segment = next((s for s in plan.segments if s.id == segment_id), None)
     if not segment:
-        raise HTTPException(404, f"No segment {segment_id} in project {project_id}")
+        raise HTTPException(404, f"No segment {segment_id} in the open project")
     return segment
 
 
-@router.post("/projects/{project_id}/concat")
-def concat_project(project_id: str) -> dict:
-    plan = load_plan(project_id)
+@router.post("/projects/concat")
+def concat_project() -> dict:
+    plan = load_plan()
     missing = [s.id for s in plan.segments if s.status != "done"]
     if missing:
         raise HTTPException(400, f"Segments not yet rendered: {missing}")

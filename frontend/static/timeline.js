@@ -18,7 +18,6 @@ let selectedId = null;
 let dragId = null;
 let dragOffsetX = 0;
 let nextId = 1;
-let projectId = null;
 
 let canvas, ctx, wrap;
 let initialized = false;
@@ -28,13 +27,13 @@ let initialized = false;
 // doesn't throw "not a function" — real implementations overwrite these
 // once init() runs.
 window.setTotalDuration = (v) => { totalDuration = v; };
-window.setProjectId = (id) => { projectId = id; };
 window.setKeyframePrompt = () => {};
 window.setKeyframeTime = () => {};
 window.setKeyframeImage = () => {};
 window.deleteKeyframe = () => {};
 window.exportPlan = () => {};
 window.setSegmentPreview = () => {};
+window.loadPlan = () => {};
 
 function waitForElements(cb) {
   const c = document.getElementById('timeline');
@@ -121,7 +120,6 @@ async function postSelection(kf) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      project_id: projectId,
       keyframe_id: kf ? kf.id : null,
       time: kf ? kf.time : 0,
       prompt: kf ? kf.prompt : '',
@@ -187,8 +185,6 @@ function init() {
 
   window.setTotalDuration = (v) => { totalDuration = v; resizeCanvas(); };
 
-  window.setProjectId = (id) => { projectId = id; };
-
   window.setKeyframePrompt = (id, text) => {
     const kf = keyframes.find(k => k.id === id);
     if (kf) { kf.prompt = text; draw(); }
@@ -233,18 +229,29 @@ function init() {
       });
     }
     const plan = {
-      project_id: projectId,
       total_duration: totalDuration,
       keyframes: sorted.map(k => ({ id: k.id, time: k.time, image_path: k.imagePath })),
       segments,
     };
-    fetch('/api/projects', {
+    return fetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(plan),
-    })
-      .then(r => r.json())
-      .then(saved => { projectId = saved.project_id; });
+    }).then(r => r.json());
+  };
+
+  window.loadPlan = (plan) => {
+    totalDuration = plan.total_duration || 60;
+    // Rebuild keyframes. A keyframe's prompt is persisted on the segment that
+    // ends at it (see exportPlan above), so map that back onto the keyframe.
+    const kfs = (plan.keyframes || []).map(k => ({
+      id: k.id, time: k.time, prompt: '', imagePath: k.image_path || null,
+    }));
+    const segs = (plan.segments || []).slice().sort((a, b) => a.start_time - b.start_time);
+    segs.forEach((s, i) => { if (kfs[i + 1]) kfs[i + 1].prompt = s.prompt || ''; });
+    keyframes = kfs;
+    selectedId = null;
+    resizeCanvas();
   };
 
   window.addEventListener('resize', resizeCanvas);

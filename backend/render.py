@@ -5,17 +5,17 @@ from backend.models import RenderPlan, Segment
 from backend.storage import load_plan, project_dir, save_plan
 
 
-def run_render(project_id: str, segment_id: str) -> None:
+def run_render(segment_id: str) -> None:
     """Entry point for a background render job. Loads current plan state
     fresh each time (rather than trusting a stale in-memory copy) since
     the NiceGUI sidebar may have edited the prompt/trim after this was
     queued."""
-    plan = load_plan(project_id)
+    plan = load_plan()
     segment = next(s for s in plan.segments if s.id == segment_id)
     segment.status = "rendering"
     save_plan(plan)
 
-    out_path = project_dir(project_id) / "clips" / f"{segment_id}.mp4"
+    out_path = project_dir() / "clips" / f"{segment_id}.mp4"
 
     try:
         if segment.source_clip_path:
@@ -75,11 +75,11 @@ def _generate_with_h3(segment: Segment, out_path: Path) -> None:
 
 
 def concat_segments(plan: RenderPlan) -> Path:
-    clips_dir = project_dir(plan.project_id) / "clips"
+    clips_dir = project_dir() / "clips"
     concat_list = clips_dir / "concat.txt"
     concat_list.write_text("\n".join(f"file '{s.output_path}'" for s in plan.segments))
 
-    final_path = project_dir(plan.project_id) / "final.mp4"
+    final_path = project_dir() / "final.mp4"
     subprocess.run(
         ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
          "-i", str(concat_list), "-c", "copy", str(final_path)],

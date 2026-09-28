@@ -27,10 +27,15 @@ class Keyframe(BaseModel):
 
 
 class RenderPlan(BaseModel):
-    project_id: str | None = None
     total_duration: float = 60
     keyframes: list[Keyframe] = []
     segments: list[Segment] = []
+
+
+class OpenProjectRequest(BaseModel):
+    """The absolute server-side path of the folder to open as the active
+    project. Created (with its image/clip subfolders) if it doesn't exist."""
+    path: str
 
 
 class SelectionState(BaseModel):
@@ -39,7 +44,6 @@ class SelectionState(BaseModel):
     so this lives as one in-memory object rather than per-session state —
     revisit if this ever needs to support multiple concurrent projects
     open at once."""
-    project_id: str | None = None
     keyframe_id: str | None = None
     time: float = 0
     prompt: str = ""
