@@ -12,6 +12,7 @@ from pathlib import Path
 from nicegui import app as nicegui_app
 from nicegui import ui
 
+from backend import storage
 from backend.api import router as api_router
 from frontend.app import PORT, build_page
 
@@ -23,6 +24,11 @@ STATIC_DIR = Path(__file__).parent / 'frontend' / 'static'
 nicegui_app.add_static_files('/static', str(STATIC_DIR))
 
 build_page()
+
+# Reopen the last project (if config.json names one that still exists) before
+# the server starts serving, so a restart resumes where the user left off
+# instead of starting with no folder open.
+storage.restore_last_project()
 
 if __name__ in {'__main__', '__mp_main__'}:
     ui.run(

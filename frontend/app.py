@@ -273,8 +273,11 @@ def build_page() -> None:
         async def open_project():
             # Server-side folder dialog (see path_picker.py) — the browser can't
             # expose real filesystem paths, so we walk the server's own tree.
+            # Start at the currently-open folder (the last one the user opened,
+            # persisted in config.json) so re-picking is one click instead of
+            # navigating from home.
             from frontend.path_picker import pick_folder
-            path = await pick_folder()
+            path = await pick_folder(project_folder['path'] or '')
             if not path:
                 return
             async with httpx.AsyncClient() as client:
