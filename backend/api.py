@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse
 
 from backend.models import OpenProjectRequest, RenderPlan, Segment, SelectionState
 from backend.render import concat_segments, run_render
-from backend.storage import load_plan, project_dir, save_image, save_plan, set_active_folder
+from backend.storage import active_folder, load_plan, project_dir, save_image, save_plan, set_active_folder
 
 router = APIRouter()
 
@@ -14,6 +14,20 @@ _selection = SelectionState()
 # ---------------------------------------------------------------------------
 # Projects / plans
 # ---------------------------------------------------------------------------
+@router.get("/projects/state")
+def project_state() -> dict:
+    """Return the currently active project (folder path + plan) or null if none is open."""
+    folder = active_folder()
+    if folder is None:
+        return {"path": None, "plan": None}
+    plan_path = folder / "timeline.json"
+    if plan_path.exists():
+        plan = RenderPlan.model_validate_json(plan_path.read_text())
+    else:
+        plan = RenderPlan()
+    return {"path": str(folder), "plan": plan}
+
+
 @router.post("/projects/open")
 def open_project(req: OpenProjectRequest) -> dict:
     """Point the app at a project folder (creating it if needed) and, if a

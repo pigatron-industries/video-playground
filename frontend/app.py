@@ -129,6 +129,19 @@ def build_page() -> None:
             return f'http://127.0.0.1:{PORT}{path}'
 
         async def poll_selection():
+            # On first poll after page load, restore project state if the server
+            # already has a project open (e.g. browser refresh).
+            if not project_folder['path']:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(api_url('/api/projects/state'))
+                ps = resp.json()
+                if ps['path']:
+                    project_folder['path'] = ps['path']
+                    folder_label.text = ps['path']
+                    if ps['plan']:
+                        ui.run_javascript(f"window.loadPlan({json.dumps(ps['plan'])})")
+                return
+
             async with httpx.AsyncClient() as client:
                 resp = await client.get(api_url('/api/ui/select'))
                 state = resp.json()
@@ -152,7 +165,11 @@ def build_page() -> None:
                     kf_prompt.value = state.get('prompt', '')
                     img_path = state.get('image_path')
                     if img_path:
-                        preview_image.source = img_path
+                        # image_path may be just a filename or a legacy full URL.
+                        preview_image.source = (
+                            img_path if img_path.startswith('/api/')
+                            else f'/api/projects/images/{img_path}'
+                        )
                         preview_image.visible = True
                     else:
                         preview_image.visible = False
@@ -193,8 +210,9 @@ def build_page() -> None:
             preview_image.source = result['url']
             preview_image.visible = True
             if current_selection['keyframe_id']:
+                filename = result['url'].split('/')[-1]
                 ui.run_javascript(
-                    f"window.setKeyframeImage('{current_selection['keyframe_id']}', '{result['url']}')"
+                    f"window.setKeyframeImage('{current_selection['keyframe_id']}', '{filename}')"
                 )
 
         def delete_current():

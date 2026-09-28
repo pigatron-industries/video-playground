@@ -25,7 +25,9 @@ let initialized = false;
 // Stub the window.* hooks immediately so an early call from the Python
 // side (e.g. the total-duration field changing before init finishes)
 // doesn't throw "not a function" — real implementations overwrite these
-// once init() runs.
+// once init() runs. loadPlan queues its argument so a page-refresh restore
+// arriving before init still works.
+let _pendingPlan = null;
 window.setTotalDuration = (v) => { totalDuration = v; };
 window.setKeyframePrompt = () => {};
 window.setKeyframeTime = () => {};
@@ -33,7 +35,7 @@ window.setKeyframeImage = () => {};
 window.deleteKeyframe = () => {};
 window.exportPlan = () => {};
 window.setSegmentPreview = () => {};
-window.loadPlan = () => {};
+window.loadPlan = (plan) => { _pendingPlan = plan; };
 
 function waitForElements(cb) {
   const c = document.getElementById('timeline');
@@ -244,8 +246,10 @@ function init() {
     totalDuration = plan.total_duration || 60;
     // Rebuild keyframes. A keyframe's prompt is persisted on the segment that
     // ends at it (see exportPlan above), so map that back onto the keyframe.
+    // Strip any legacy /api/projects/images/ prefix so we always store just the filename.
     const kfs = (plan.keyframes || []).map(k => ({
-      id: k.id, time: k.time, prompt: '', imagePath: k.image_path || null,
+      id: k.id, time: k.time, prompt: '',
+      imagePath: k.image_path ? k.image_path.replace(/^\/api\/projects\/images\//, '') : null,
     }));
     const segs = (plan.segments || []).slice().sort((a, b) => a.start_time - b.start_time);
     segs.forEach((s, i) => { if (kfs[i + 1]) kfs[i + 1].prompt = s.prompt || ''; });
@@ -253,6 +257,12 @@ function init() {
     selectedId = null;
     resizeCanvas();
   };
+
+  // Process any plan that was queued via the stub before init() ran.
+  if (_pendingPlan) {
+    window.loadPlan(_pendingPlan);
+    _pendingPlan = null;
+  }
 
   window.addEventListener('resize', resizeCanvas);
   resizeCanvas();
