@@ -18,3 +18,5 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+config.json

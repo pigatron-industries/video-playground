@@ -36,6 +36,9 @@ def build_page() -> None:
             .q-page-container { height: 100vh; }
             .q-page { height: 100%; }
             .nicegui-content { height: 100%; padding: 0; gap: 0; }
+            /* Keep the "Keyframe image" uploader compact — the file list is
+               redundant since the thumbnail below already shows the image. */
+            .q-uploader__list { display: none; }
             """
         )
 
@@ -79,6 +82,16 @@ def build_page() -> None:
                             auto_upload=True,
                             on_upload=lambda e: handle_upload(e),
                         ).props('dense').classes('w-full')
+                        # Thumbnail of the selected keyframe's image, shown
+                        # under the uploader (about half the form's width) so
+                        # the current image is visible in the editor context.
+                        # Follows selection/upload.
+                        kf_thumb = ui.image().style(
+                            'width: 50%; min-width: 0; height: 96px; '
+                            'object-fit: contain; background:#1a1a1e; '
+                            'border: 1px solid #34343c'
+                        )
+                        kf_thumb.visible = False
                         kf_prompt = ui.textarea('Transition prompt (segment ending here)').props('dense outlined').classes('w-full')
                         render_status = ui.label('').classes('text-caption')
                         with ui.row().classes('w-full gap-2'):
@@ -157,6 +170,7 @@ def build_page() -> None:
                     edit_panel.visible = False
                     no_selection_label.visible = True
                     preview_image.visible = False
+                    kf_thumb.visible = False
                 else:
                     current_selection['time'] = kf_time_val
                     edit_panel.visible = True
@@ -166,13 +180,17 @@ def build_page() -> None:
                     img_path = state.get('image_path')
                     if img_path:
                         # image_path may be just a filename or a legacy full URL.
-                        preview_image.source = (
+                        img_url = (
                             img_path if img_path.startswith('/api/')
                             else f'/api/projects/images/{img_path}'
                         )
+                        preview_image.source = img_url
                         preview_image.visible = True
+                        kf_thumb.source = img_url
+                        kf_thumb.visible = True
                     else:
                         preview_image.visible = False
+                        kf_thumb.visible = False
             elif kf_id is not None and kf_time_val != current_selection.get('time'):
                 # Same keyframe still selected, but its time moved on the canvas
                 # (user dragged it) — sync just the time field. Comparing against
@@ -209,6 +227,8 @@ def build_page() -> None:
             result = resp.json()
             preview_image.source = result['url']
             preview_image.visible = True
+            kf_thumb.source = result['url']
+            kf_thumb.visible = True
             if current_selection['keyframe_id']:
                 filename = result['url'].split('/')[-1]
                 ui.run_javascript(
@@ -221,6 +241,7 @@ def build_page() -> None:
                 edit_panel.visible = False
                 no_selection_label.visible = True
                 preview_image.visible = False
+                kf_thumb.visible = False
 
         async def render_current_segment():
             # NOTE: rendering is defined per-segment (between two keyframes),
