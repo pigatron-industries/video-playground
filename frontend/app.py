@@ -122,17 +122,21 @@ def build_page() -> None:
 
             project_id_holder['id'] = state.get('project_id')
             kf_id = state.get('keyframe_id')
+            kf_time_val = state.get('time', 0)
 
             if kf_id != current_selection['keyframe_id']:
+                # Selection changed (or was cleared) — refresh the whole form.
                 current_selection['keyframe_id'] = kf_id
                 if kf_id is None:
+                    current_selection['time'] = None
                     edit_panel.visible = False
                     no_selection_label.visible = True
                     preview_image.visible = False
                 else:
+                    current_selection['time'] = kf_time_val
                     edit_panel.visible = True
                     no_selection_label.visible = False
-                    kf_time.value = state.get('time', 0)
+                    kf_time.value = kf_time_val
                     kf_prompt.value = state.get('prompt', '')
                     img_path = state.get('image_path')
                     if img_path:
@@ -140,6 +144,13 @@ def build_page() -> None:
                         preview_image.visible = True
                     else:
                         preview_image.visible = False
+            elif kf_id is not None and kf_time_val != current_selection.get('time'):
+                # Same keyframe still selected, but its time moved on the canvas
+                # (user dragged it) — sync just the time field. Comparing against
+                # the last backend value (not the field's) means this won't
+                # clobber a time the user is currently typing in the form.
+                current_selection['time'] = kf_time_val
+                kf_time.value = kf_time_val
 
         ui.timer(0.4, poll_selection)
 
