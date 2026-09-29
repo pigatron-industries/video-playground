@@ -20,26 +20,16 @@ def project_state() -> dict:
     folder = active_folder()
     if folder is None:
         return {"path": None, "plan": None}
-    plan_path = folder / "timeline.json"
-    if plan_path.exists():
-        plan = RenderPlan.model_validate_json(plan_path.read_text())
-    else:
-        plan = RenderPlan()
-    return {"path": str(folder), "plan": plan}
+    return {"path": str(folder), "plan": load_plan()}
 
 
 @router.post("/projects/open")
 def open_project(req: OpenProjectRequest) -> dict:
-    """Point the app at a project folder (creating it if needed) and, if a
-    timeline.json already lives there, load it back so the UI can restore
+    """Point the app at a project folder (creating it if needed) and load
+    its timeline into the in-memory session state so the UI can restore
     the canvas. Returns the resolved folder path plus the plan."""
     folder = set_active_folder(req.path)
-    plan_path = folder / "timeline.json"
-    if plan_path.exists():
-        plan = RenderPlan.model_validate_json(plan_path.read_text())
-    else:
-        plan = RenderPlan()
-    return {"path": str(folder), "plan": plan}
+    return {"path": str(folder), "plan": load_plan()}
 
 
 @router.post("/projects")

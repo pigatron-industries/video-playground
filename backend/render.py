@@ -6,10 +6,9 @@ from backend.storage import load_plan, project_dir, save_plan
 
 
 def run_render(segment_id: str) -> None:
-    """Entry point for a background render job. Loads current plan state
-    fresh each time (rather than trusting a stale in-memory copy) since
-    the NiceGUI sidebar may have edited the prompt/trim after this was
-    queued."""
+    """Entry point for a background render job. Uses the shared in-memory
+    plan (the single source of truth for the session), since the NiceGUI
+    sidebar may have edited the prompt/trim after this was queued."""
     plan = load_plan()
     segment = next(s for s in plan.segments if s.id == segment_id)
     segment.status = "rendering"

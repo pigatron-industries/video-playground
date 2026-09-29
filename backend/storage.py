@@ -10,6 +10,14 @@ from backend.models import RenderPlan
 # inside it. Set via set_active_folder (the "Open Project" flow).
 _active_folder: Path | None = None
 
+# In-memory copy of the open project's timeline state. The file is read
+# exactly once — the first time the plan is accessed for a given project
+# (open project flow or app startup) — and from then on every API reads
+# from this variable, so edits made on top of the loaded state are never
+# clobbered by a stale re-read. save_plan() keeps it in sync and persists
+# to disk. Switching project folders resets it to force a fresh load.
+_plan: RenderPlan | None = None
+
 # App-level config, persisted across server restarts. Lives in the app root
 # (one level up from this backend/ package) so it's easy to find; it's
 # git-ignored because it stores this machine's absolute paths.
@@ -43,11 +51,12 @@ def set_active_folder(path: str, *, persist: bool = True) -> Path:
     subfolders) if it doesn't exist yet. With ``persist`` (the default) the
     folder is also saved as the last-opened project so a restart resumes
     here. Returns the resolved folder."""
-    global _active_folder
+    global _active_folder, _plan
     folder = Path(path).expanduser().resolve()
     (folder / "images").mkdir(parents=True, exist_ok=True)
     (folder / "clips").mkdir(parents=True, exist_ok=True)
     _active_folder = folder
+    _plan = None  # new project — the file is (re)loaded once on first access
     if persist:
         save_last_folder(folder)
     return folder
@@ -78,13 +87,26 @@ def project_dir() -> Path:
 
 
 def load_plan() -> RenderPlan:
-    plan_path = project_dir() / "timeline.json"
-    if not plan_path.exists():
-        raise HTTPException(404, "No timeline.json in the open project folder")
-    return RenderPlan.model_validate_json(plan_path.read_text())
+    """Return the in-memory copy of the open project's timeline.
+
+    timeline.json is read only to populate the cache the first time a
+    project's plan is accessed (a fresh project gets an empty plan); every
+    later call returns the cached object, so in-memory edits made after
+    the initial load are the single source of truth for the session.
+    """
+    global _plan
+    if _plan is None:
+        plan_path = project_dir() / "timeline.json"
+        if plan_path.exists():
+            _plan = RenderPlan.model_validate_json(plan_path.read_text())
+        else:
+            _plan = RenderPlan()
+    return _plan
 
 
 def save_plan(plan: RenderPlan) -> None:
+    global _plan
+    _plan = plan
     plan_path = project_dir() / "timeline.json"
     plan_path.write_text(plan.model_dump_json(indent=2))
 
