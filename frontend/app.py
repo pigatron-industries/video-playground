@@ -14,6 +14,7 @@ Page layout (three sections):
                  scrollable horizontally
 """
 
+import asyncio
 import json
 
 import httpx
@@ -71,8 +72,8 @@ def build_page() -> None:
                 with ui.column().classes('q-pa-md gap-2').style(
                     'flex: 1 1 0; min-width: 0; overflow-y: auto; border-right: 1px solid #34343c; background:#232328'
                 ) as _editor:
-                    ui.label('Selected Keyframe').classes('text-subtitle2 text-grey')
-                    no_selection_label = ui.label('Click a keyframe in the timeline to edit it.').classes('text-caption text-grey')
+                    sel_title = ui.label('Selected Keyframe').classes('text-subtitle2 text-grey')
+                    no_selection_label = ui.label('Click a keyframe or a video segment in the timeline.').classes('text-caption text-grey')
 
                     with ui.column().classes('w-full gap-2') as edit_panel:
                         edit_panel.visible = False
@@ -93,10 +94,20 @@ def build_page() -> None:
                         )
                         kf_thumb.visible = False
                         kf_prompt = ui.textarea('Transition prompt (segment ending here)').props('dense outlined').classes('w-full')
-                        render_status = ui.label('').classes('text-caption')
                         with ui.row().classes('w-full gap-2'):
-                            ui.button('Render segment', on_click=lambda: render_current_segment())
                             ui.button('Delete', on_click=lambda: delete_current())
+
+                    # Selected-segment panel — shown when a block in the video
+                    # row of the timeline is selected. Segments are the gaps
+                    # between consecutive keyframes; the prompt is edited on
+                    # the ending keyframe's panel.
+                    with ui.column().classes('w-full gap-2') as seg_panel:
+                        seg_panel.visible = False
+                        seg_range = ui.label('').classes('text-subtitle2')
+                        seg_prompt = ui.label('').classes('text-caption')
+                        seg_status_label = ui.label('Status: empty').classes('text-caption')
+                        with ui.row().classes('w-full gap-2'):
+                            ui.button('Render segment', icon='movie', on_click=lambda: render_selected_segment())
 
                 # top-right: video/image preview window
                 with ui.column().classes('items-stretch gap-2 q-pa-md').style(
@@ -135,7 +146,7 @@ def build_page() -> None:
                     .style('width: 100%; height: 100%; min-width: 0;')
 
         # --- state mirrored from the canvas via polling --------------------
-        current_selection = {'keyframe_id': None}
+        current_selection = {'key': None, 'keyframe_id': None, 'segment_id': None}
 
         def api_url(path: str) -> str:
             # Same-origin — NiceGUI serves the API router on this app too.
@@ -159,55 +170,90 @@ def build_page() -> None:
                 resp = await client.get(api_url('/api/ui/select'))
                 state = resp.json()
 
+            kind = state.get('kind', 'keyframe')
             kf_id = state.get('keyframe_id')
-            kf_time_val = state.get('time', 0)
+            seg_id = state.get('segment_id')
+            skey = (kind, kf_id, seg_id)
 
-            if kf_id != current_selection['keyframe_id']:
-                # Selection changed (or was cleared) — refresh the whole form.
-                current_selection['keyframe_id'] = kf_id
-                if kf_id is None:
-                    current_selection['time'] = None
-                    edit_panel.visible = False
-                    no_selection_label.visible = True
+            if skey == current_selection['key']:
+                # Same selection as last poll — only sync a keyframe whose
+                # time moved on the canvas (user dragged it). Comparing
+                # against the last backend value (not the field's) means
+                # this won't clobber a time the user is typing in the form.
+                if kf_id is not None:
+                    kf_time_val = state.get('time', 0)
+                    if kf_time_val != current_selection.get('time'):
+                        current_selection['time'] = kf_time_val
+                        kf_time.value = kf_time_val
+                return
+
+            # Selection changed (or was cleared) — refresh the whole form.
+            current_selection['key'] = skey
+            current_selection['kind'] = kind
+            current_selection['keyframe_id'] = kf_id
+            current_selection['segment_id'] = seg_id
+
+            if kind == 'segment' and seg_id:
+                current_selection['time'] = None
+                sel_title.text = 'Selected Segment'
+                edit_panel.visible = False
+                no_selection_label.visible = False
+                preview_image.visible = False
+                kf_thumb.visible = False
+                seg_panel.visible = True
+                seg_range.text = (
+                    f"{state.get('start_time', 0):.1f}s → {state.get('end_time', 0):.1f}s "
+                    f"· {state.get('duration', 0):.1f}s"
+                )
+                seg_prompt.text = state.get('prompt') or 'No transition prompt set — edit it on the ending keyframe.'
+                _show_seg_status(seg_id, state.get('status') or 'empty')
+                if (state.get('status') or 'empty') == 'done':
+                    ui.run_javascript(f"window.setSegmentPreview('/api/projects/clips/{seg_id}.mp4')")
+                    video_status.text = 'Rendered clip — press play to watch.'
+                else:
+                    video_status.text = 'No rendered clip yet — render the segment to preview video here.'
+            elif kf_id is not None:
+                current_selection['time'] = state.get('time', 0)
+                sel_title.text = 'Selected Keyframe'
+                seg_panel.visible = False
+                edit_panel.visible = True
+                no_selection_label.visible = False
+                kf_time.value = state.get('time', 0)
+                kf_prompt.value = state.get('prompt', '')
+                img_path = state.get('image_path')
+                if img_path:
+                    # image_path may be just a filename or a legacy full URL.
+                    img_url = (
+                        img_path if img_path.startswith('/api/')
+                        else f'/api/projects/images/{img_path}'
+                    )
+                    preview_image.source = img_url
+                    preview_image.visible = True
+                    kf_thumb.source = img_url
+                    kf_thumb.visible = True
+                else:
                     preview_image.visible = False
                     kf_thumb.visible = False
-                else:
-                    current_selection['time'] = kf_time_val
-                    edit_panel.visible = True
-                    no_selection_label.visible = False
-                    kf_time.value = kf_time_val
-                    kf_prompt.value = state.get('prompt', '')
-                    img_path = state.get('image_path')
-                    if img_path:
-                        # image_path may be just a filename or a legacy full URL.
-                        img_url = (
-                            img_path if img_path.startswith('/api/')
-                            else f'/api/projects/images/{img_path}'
-                        )
-                        preview_image.source = img_url
-                        preview_image.visible = True
-                        kf_thumb.source = img_url
-                        kf_thumb.visible = True
-                    else:
-                        preview_image.visible = False
-                        kf_thumb.visible = False
-            elif kf_id is not None and kf_time_val != current_selection.get('time'):
-                # Same keyframe still selected, but its time moved on the canvas
-                # (user dragged it) — sync just the time field. Comparing against
-                # the last backend value (not the field's) means this won't
-                # clobber a time the user is currently typing in the form.
-                current_selection['time'] = kf_time_val
-                kf_time.value = kf_time_val
+            else:
+                current_selection['time'] = None
+                sel_title.text = 'Selected Keyframe'
+                seg_panel.visible = False
+                edit_panel.visible = False
+                no_selection_label.visible = True
+                preview_image.visible = False
+                kf_thumb.visible = False
 
         ui.timer(0.4, poll_selection)
 
         # --- form -> canvas -------------------------------------------------
+        # These only apply to a keyframe selection — a selected segment has
+        # no editable fields in the form (its prompt lives on the ending keyframe).
         def on_time_change(e):
-            if current_selection['keyframe_id']:
+            if current_selection.get('keyframe_id'):
                 ui.run_javascript(f"window.setKeyframeTime('{current_selection['keyframe_id']}', {e.value})")
 
         def on_prompt_change(e):
-            if current_selection['keyframe_id']:
+            if current_selection.get('keyframe_id'):
                 ui.run_javascript(
                     f"window.setKeyframePrompt('{current_selection['keyframe_id']}', {json.dumps(e.value)})"
                 )
@@ -229,29 +275,69 @@ def build_page() -> None:
             preview_image.visible = True
             kf_thumb.source = result['url']
             kf_thumb.visible = True
-            if current_selection['keyframe_id']:
+            if current_selection.get('keyframe_id'):
                 filename = result['url'].split('/')[-1]
                 ui.run_javascript(
                     f"window.setKeyframeImage('{current_selection['keyframe_id']}', '{filename}')"
                 )
 
         def delete_current():
-            if current_selection['keyframe_id']:
+            if current_selection.get('keyframe_id'):
                 ui.run_javascript(f"window.deleteKeyframe('{current_selection['keyframe_id']}')")
                 edit_panel.visible = False
+                seg_panel.visible = False
                 no_selection_label.visible = True
                 preview_image.visible = False
                 kf_thumb.visible = False
 
-        async def render_current_segment():
-            # NOTE: rendering is defined per-segment (between two keyframes),
-            # not per-keyframe. This assumes the backend can resolve "the
-            # segment ending at this keyframe" — wire that lookup in once
-            # segment IDs are settled; left as a TODO to keep this scaffold
-            # honest rather than papering over it. Once a clip URL is produced,
-            # drive the preview with:
-            #   ui.run_javascript(f"window.setSegmentPreview('<url>')")
-            render_status.text = 'TODO: resolve segment id for this keyframe, then POST /render'
+        def _show_seg_status(seg_id: str, status: str, error: str | None = None) -> None:
+            """Mirror a segment's render status onto the canvas block and,
+            if it's the currently selected segment, the sidebar label."""
+            ui.run_javascript(f"window.setSegmentStatus('{seg_id}', '{status}')")
+            if current_selection.get('segment_id') == seg_id:
+                seg_status_label.text = f'Status: {status}' + (f' — {error}' if error else '')
+
+        async def render_selected_segment():
+            seg_id = current_selection.get('segment_id')
+            if not seg_id:
+                ui.notify('Select a video segment in the timeline first.', type='warning')
+                return
+            if not project_folder['path']:
+                ui.notify('Open a project folder before rendering.', type='warning')
+                return
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(api_url(f'/api/projects/segments/{seg_id}/render'))
+            except httpx.HTTPError as exc:
+                ui.notify(f'Could not start render: {exc}', type='negative')
+                return
+            if resp.status_code != 200:
+                ui.notify(f'Render failed: {resp.text}', type='negative')
+                return
+
+            _show_seg_status(seg_id, 'queued')
+            # Follow the render job until it settles, mirroring status onto
+            # the canvas block as it changes.
+            while True:
+                await asyncio.sleep(1.0)
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(api_url(f'/api/projects/segments/{seg_id}/status'))
+                if r.status_code != 200:
+                    ui.notify('Lost track of the render job.', type='negative')
+                    return
+                seg = r.json()
+                status = seg.get('status', 'queued')
+                if status in ('queued', 'rendering'):
+                    _show_seg_status(seg_id, status)
+                    continue
+                _show_seg_status(seg_id, status, error=seg.get('error'))
+                if status == 'done':
+                    ui.run_javascript(f"window.setSegmentPreview('/api/projects/clips/{seg_id}.mp4')")
+                    video_status.text = 'Rendered clip — press play to watch.'
+                    ui.notify('Segment rendered.', type='positive')
+                else:
+                    ui.notify(f"Render failed: {seg.get('error') or 'unknown error'}", type='negative')
+                return
 
         async def concat_final():
             if not project_folder['path']:

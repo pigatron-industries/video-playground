@@ -72,6 +72,18 @@ def get_image(filename: str) -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
+# Rendered clips — written by backend/render.py as clips/<segment_id>.mp4
+# and played in the preview window once a segment's status is "done".
+# ---------------------------------------------------------------------------
+@router.get("/projects/clips/{filename}")
+def get_clip(filename: str) -> FileResponse:
+    path = project_dir() / "clips" / filename
+    if not path.exists():
+        raise HTTPException(404, "Clip not found")
+    return FileResponse(path)
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 @router.post("/projects/segments/{segment_id}/render")

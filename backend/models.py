@@ -43,8 +43,18 @@ class SelectionState(BaseModel):
     side so NiceGUI's sidebar form can display/edit it. Single-user app,
     so this lives as one in-memory object rather than per-session state —
     revisit if this ever needs to support multiple concurrent projects
-    open at once."""
+    open at once. ``kind`` says whether the selection is a keyframe dot
+    (top track) or a video segment block (bottom row); exactly one of the
+    two IDs is set, or both are null when nothing is selected."""
+    kind: Literal["keyframe", "segment"] = "keyframe"
     keyframe_id: str | None = None
+    segment_id: str | None = None
     time: float = 0
     prompt: str = ""
     image_path: str | None = None
+    # Segment context (populated when kind == "segment") — posted by the
+    # canvas so the sidebar can display it without re-deriving the plan.
+    start_time: float = 0
+    end_time: float = 0
+    duration: float = 0
+    status: str = ""

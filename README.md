@@ -41,14 +41,11 @@ APIs, and keeps the canvas genuinely framework-agnostic (you could swap
 NiceGUI out later without touching timeline.js).
 
 ## Known gaps / TODOs (left visible rather than papered over)
-- `render_current_segment()` in `frontend/app.py` doesn't yet resolve
-  *which* segment corresponds to a selected keyframe — segments live
-  between two keyframes, not on one. Needs a small lookup once you decide
-  how segment IDs should be derived/stored.
 - `_generate_with_h3` in `backend/render.py` is still a stub — needs real
   credentials and the current H3 request/response shape confirmed.
-- No video/audio track (drag-in clips, trim handles, waveform) yet — this
-  is still the keyframe-only version of the timeline.
+- The video timeline row shows the derived segments (click a block to
+  select, render, and watch its status color update), but drag-in source
+  clips, trim handles, and a waveform are still to come.
 - 400ms polling for selection state is simple but not instant — fine for
   editing, but if it ever feels laggy, that's the first thing to tune
   (interval) or replace (NiceGUI's own event bridge, if you want to trade

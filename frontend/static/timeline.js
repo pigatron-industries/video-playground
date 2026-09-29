@@ -11,12 +11,27 @@
 const PPS = 40;
 const TRACK_Y = 60;
 const KF_R = 10;
+const SEG_TOP = 112;  // top of the video segment row (below the keyframe track)
+const SEG_H = 46;     // height of a segment block
+
+// Render status → block colors. Status lives on the *segment* (it comes
+// from the saved plan and the render job), not on the keyframe.
+const SEG_COLORS = {
+  empty:     { fill: 'rgba(91,140,255,0.10)', stroke: 'rgba(91,140,255,0.45)', text: '#8b8b95' },
+  queued:    { fill: 'rgba(224,179,65,0.15)', stroke: 'rgba(224,179,65,0.60)', text: '#e0b341' },
+  rendering: { fill: 'rgba(224,179,65,0.30)', stroke: 'rgba(224,179,65,0.90)', text: '#e0b341' },
+  done:      { fill: 'rgba(63,185,80,0.18)',  stroke: 'rgba(63,185,80,0.70)',  text: '#3fb950' },
+  error:     { fill: 'rgba(248,81,73,0.16)',  stroke: 'rgba(248,81,73,0.70)',  text: '#f85149' },
+};
 
 let totalDuration = 60;
 let keyframes = [];
-let selectedId = null;
+let selectedId = null;      // selected keyframe dot (top track)
+let selectedSegId = null;   // selected segment block (bottom row)
+let segStatus = {};         // segment id → render status ('empty'|'queued'|'rendering'|'done'|'error')
 let dragId = null;
 let dragOffsetX = 0;
+let dragMoved = false;
 let nextId = 1;
 
 let canvas, ctx, wrap;
@@ -35,6 +50,7 @@ window.setKeyframeImage = () => {};
 window.deleteKeyframe = () => {};
 window.exportPlan = () => {};
 window.setSegmentPreview = () => {};
+window.setSegmentStatus = () => {};
 window.loadPlan = (plan) => { _pendingPlan = plan; };
 
 function waitForElements(cb) {
@@ -56,8 +72,36 @@ function xToTime(x) { return Math.max(0, (x - 40) / PPS); }
 
 function resizeCanvas() {
   canvas.width = Math.max(wrap.clientWidth, totalDuration * PPS + 80);
-  canvas.height = 320;
+  canvas.height = 200;
   draw();
+}
+
+// Segments are derived state: the gap between each pair of consecutive
+// keyframes (sorted by time). IDs match what exportPlan persists
+// ("kfA-kfB") so saved render status maps onto the live blocks.
+function getSegments() {
+  const sorted = [...keyframes].sort((a, b) => a.time - b.time);
+  const segs = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    segs.push({
+      id: `${sorted[i].id}-${sorted[i + 1].id}`,
+      start: sorted[i].time,
+      end: sorted[i + 1].time,
+      prompt: sorted[i + 1].prompt || '',
+    });
+  }
+  return segs;
+}
+
+function roundRect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 function draw() {
@@ -107,6 +151,75 @@ function draw() {
       ctx.fill();
     }
   });
+
+  drawVideoRow();
+}
+
+function drawVideoRow() {
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.fillStyle = '#8b8b95';
+  ctx.fillText('KEYFRAMES', 8, TRACK_Y - 16);
+  ctx.fillText('VIDEO', 8, SEG_TOP + 14);
+
+  // Faint full-length rail behind the segment blocks.
+  ctx.strokeStyle = '#2a2a30';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(40, SEG_TOP + SEG_H / 2);
+  ctx.lineTo(timeToX(totalDuration), SEG_TOP + SEG_H / 2);
+  ctx.stroke();
+
+  const segs = getSegments();
+  if (segs.length === 0) {
+    ctx.save();
+    ctx.strokeStyle = '#34343c';
+    ctx.setLineDash([4, 4]);
+    ctx.lineWidth = 1;
+    ctx.strokeRect(40, SEG_TOP, timeToX(totalDuration) - 40, SEG_H);
+    ctx.restore();
+    ctx.fillStyle = '#55555e';
+    ctx.fillText('Add two or more keyframes to create a video segment', 52, SEG_TOP + SEG_H / 2 + 3);
+    return;
+  }
+
+  for (const s of segs) {
+    const x1 = timeToX(s.start) + 2;
+    const w = Math.max(2, timeToX(s.end) - x1 - 2);
+    const status = segStatus[s.id] || 'empty';
+    const colors = SEG_COLORS[status] || SEG_COLORS.empty;
+    const selected = s.id === selectedSegId;
+
+    roundRect(x1, SEG_TOP, w, SEG_H, 6);
+    ctx.fillStyle = colors.fill;
+    ctx.fill();
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.strokeStyle = selected ? '#e6e6ea' : colors.stroke;
+    ctx.stroke();
+
+    if (w >= 36) {
+      const cx = x1 + w / 2;
+      const cy = SEG_TOP + SEG_H / 2;
+      ctx.textAlign = 'center';
+      if (w >= 90 && status !== 'empty') {
+        ctx.fillStyle = '#c9c9d2';
+        ctx.fillText((s.end - s.start).toFixed(1) + 's', cx, cy - 2);
+        ctx.fillStyle = colors.text;
+        ctx.fillText(status, cx, cy + 10);
+      } else {
+        ctx.fillStyle = '#c9c9d2';
+        ctx.fillText((s.end - s.start).toFixed(1) + 's', cx, cy + 3);
+      }
+      ctx.textAlign = 'start';
+    }
+  }
+}
+
+function findSegAt(x, y) {
+  if (y < SEG_TOP || y > SEG_TOP + SEG_H) return null;
+  for (const s of getSegments()) {
+    if (x >= timeToX(s.start) && x <= timeToX(s.end)) return s;
+  }
+  return null;
 }
 
 function findKfAt(x, y) {
@@ -117,15 +230,25 @@ function findKfAt(x, y) {
   return null;
 }
 
-async function postSelection(kf) {
+// Push the current selection to the backend. Exactly one of keyframe /
+// segment is selected (or neither, to clear); the sidebar polls this back.
+async function syncSelection() {
+  const kf = selectedId ? keyframes.find(k => k.id === selectedId) : null;
+  const seg = selectedSegId ? getSegments().find(s => s.id === selectedSegId) : null;
   await fetch('/api/ui/select', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      kind: seg ? 'segment' : 'keyframe',
       keyframe_id: kf ? kf.id : null,
+      segment_id: seg ? seg.id : null,
       time: kf ? kf.time : 0,
-      prompt: kf ? kf.prompt : '',
+      prompt: (seg || kf) ? ((seg || kf).prompt || '') : '',
       image_path: kf ? kf.imagePath : null,
+      start_time: seg ? seg.start : 0,
+      end_time: seg ? seg.end : 0,
+      duration: seg ? Math.round((seg.end - seg.start) * 10) / 10 : 0,
+      status: seg ? (segStatus[seg.id] || 'empty') : '',
     }),
   });
 }
@@ -140,45 +263,80 @@ function init() {
   if (hit) {
     dragId = hit.id;
     dragOffsetX = timeToX(hit.time) - x;
+    dragMoved = false;
     selectedId = hit.id;
-    postSelection(hit);
+    selectedSegId = null;
+    syncSelection();
     draw();
   }
 });
 
   canvas.addEventListener('mousemove', e => {
-    if (dragId === null) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left + dragOffsetX;
-    const kf = keyframes.find(k => k.id === dragId);
-    if (kf) {
-      kf.time = Math.round(Math.min(totalDuration, Math.max(0, xToTime(x))) * 10) / 10;
-      draw(); // local only — no network call while dragging
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if (dragId !== null) {
+      dragMoved = true;
+      const kf = keyframes.find(k => k.id === dragId);
+      if (kf) {
+        kf.time = Math.round(Math.min(totalDuration, Math.max(0, xToTime(x + dragOffsetX))) * 10) / 10;
+        draw(); // local only — no network call while dragging
+      }
+      canvas.style.cursor = 'grabbing';
+      return;
     }
+    canvas.style.cursor = (findKfAt(x, y) || findSegAt(x, y)) ? 'pointer' : 'crosshair';
   });
 
   window.addEventListener('mouseup', () => {
     if (dragId !== null) {
-      const kf = keyframes.find(k => k.id === dragId);
-      if (kf) postSelection(kf); // sync final position once the drag settles
+      syncSelection(); // sync final position once the drag settles
     }
     dragId = null;
+    canvas.style.cursor = 'crosshair';
   });
 
   canvas.addEventListener('click', e => {
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
-    const hit = findKfAt(x, y);
-    if (hit) {
-      selectedId = hit.id;
-      postSelection(hit);
+
+    // A completed drag ends with a click on the canvas too — ignore it so
+    // releasing over a segment block doesn't accidentally select it.
+    if (dragMoved) { dragMoved = false; return; }
+
+    const kfHit = findKfAt(x, y);
+    if (kfHit) {
+      selectedId = kfHit.id;
+      selectedSegId = null;
+      syncSelection();
       draw();
-    } else if (Math.abs(y - TRACK_Y) < 20) {
+      return;
+    }
+
+    const segHit = findSegAt(x, y);
+    if (segHit) {
+      selectedSegId = segHit.id;
+      selectedId = null;
+      syncSelection();
+      draw();
+      return;
+    }
+
+    if (Math.abs(y - TRACK_Y) < 20) {
       const kf = { id: 'kf' + nextId++, time: Math.round(xToTime(x) * 10) / 10, prompt: '', imagePath: null };
       keyframes.push(kf);
       selectedId = kf.id;
+      selectedSegId = null;
       resizeCanvas();
-      postSelection(kf);
+      syncSelection();
+      return;
+    }
+
+    // Click on empty space clears any selection.
+    if (selectedId !== null || selectedSegId !== null) {
+      selectedId = null;
+      selectedSegId = null;
+      syncSelection();
+      draw();
     }
   });
 
@@ -205,7 +363,9 @@ function init() {
   window.deleteKeyframe = (id) => {
     keyframes = keyframes.filter(k => k.id !== id);
     if (selectedId === id) selectedId = null;
+    selectedSegId = null; // segments are derived — any stale id is invalid now
     resizeCanvas();
+    syncSelection();
   };
 
   window.setSegmentPreview = (url) => {
@@ -214,6 +374,11 @@ function init() {
       v.src = url;
       v.load();
     }
+  };
+
+  window.setSegmentStatus = (id, status) => {
+    segStatus[id] = status;
+    draw();
   };
 
   window.exportPlan = () => {
@@ -255,6 +420,10 @@ function init() {
     segs.forEach((s, i) => { if (kfs[i + 1]) kfs[i + 1].prompt = s.prompt || ''; });
     keyframes = kfs;
     selectedId = null;
+    selectedSegId = null;
+    // Restore each segment's render status onto its block.
+    segStatus = {};
+    (plan.segments || []).forEach(s => { segStatus[s.id] = s.status || 'empty'; });
     resizeCanvas();
   };
 
