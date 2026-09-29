@@ -52,24 +52,22 @@ def _image_url(name: str | None) -> str | None:
 
 
 def plan_to_keyframes(plan: RenderPlan) -> list[dict]:
-    """RenderPlan -> the widget's keyframe format. A keyframe's prompt is
-    persisted on the segment that *ends* at it, so map it back here."""
-    prompt_by_end = {s.id.split('-', 1)[1]: s.prompt for s in plan.segments if '-' in s.id}
+    """RenderPlan -> the widget's keyframe format. Keyframes are bare time
+    markers on the canvas; the prompt and start/end frame images live on the
+    segments (see the segment editor), not on the keyframes."""
     return [
-        {
-            'id': k.id,
-            'time': k.time,
-            'prompt': prompt_by_end.get(k.id, ''),
-            'imagePath': _image_name(k.image_path),
-        }
+        {'id': k.id, 'time': k.time}
         for k in sorted(plan.keyframes, key=lambda k: k.time)
     ]
 
 
 def merge_keyframes_into_plan(plan: RenderPlan, kfs: list[dict]) -> RenderPlan:
     """Regenerate keyframes + segments from the widget's keyframes, carrying
-    over render state (status, output, trim, speed, ...) for any segment whose
-    id ("kfA-kfB") still exists."""
+    over each segment's prompt, start/end frame images and render state
+    (status, output, trim, speed, ...) for any segment whose id ("kfA-kfB")
+    still exists. Keyframes are bare time markers — the prompt and frame
+    images are segment properties, so they are preserved here, not re-derived
+    from the keyframes."""
     kfs = sorted(kfs, key=lambda k: k['time'])
     old = {s.id: s for s in plan.segments}
     segs = []
@@ -78,12 +76,8 @@ def merge_keyframes_into_plan(plan: RenderPlan, kfs: list[dict]) -> RenderPlan:
         s = old.get(sid) or Segment(id=sid, start_time=0, end_time=0, duration=0)
         s.start_time, s.end_time = a['time'], b['time']
         s.duration = round(b['time'] - a['time'], 1)
-        s.start_image_path, s.end_image_path = a['imagePath'], b['imagePath']
-        s.prompt = b.get('prompt', '')
         segs.append(s)
-    plan.keyframes = [
-        Keyframe(id=k['id'], time=k['time'], image_path=k['imagePath']) for k in kfs
-    ]
+    plan.keyframes = [Keyframe(id=k['id'], time=k['time']) for k in kfs]
     plan.segments = segs
     return plan
 
@@ -99,15 +93,16 @@ def build_page() -> None:
             .q-page-container { height: 100vh; }
             .q-page { height: 100%; }
             .nicegui-content { height: 100%; padding: 0; gap: 0; }
-            /* Keep the "Keyframe image" uploader compact — the file list is
-               redundant since the thumbnail below already shows the image. */
+            /* Keep the start/end frame uploaders compact — the file list is
+               redundant since the thumbnail above each already shows the image. */
             .q-uploader__list { display: none; }
             """
         )
 
         # Per-page working state. `kfs` is the list of keyframe dicts the
-        # widget shows ([{id, time, prompt, imagePath}]); it is the working
-        # copy that gets merged into the plan and persisted on every change.
+        # widget shows ([{id, time}]); it is the working copy that gets merged
+        # into the plan and persisted on every change. Segments own the prompt
+        # and start/end frame images — edit those directly on the plan.
         state = {
             'kfs': [],
             'sel_kind': None,   # 'keyframe' | 'segment' | None
@@ -148,48 +143,70 @@ def build_page() -> None:
                         'Click a keyframe or a video segment in the timeline.'
                     ).classes('text-caption text-grey')
 
+                    # Keyframe editor — keyframes are bare time markers. The
+                    # prompt and start/end frame images belong to the segment,
+                    # so they live in the segment panel below, not here.
                     with ui.column().classes('w-full gap-2') as edit_panel:
                         edit_panel.visible = False
                         kf_time = ui.number('Time (s)', value=0).props('dense outlined')
-                        kf_upload = ui.upload(
-                            label='Keyframe image',
-                            auto_upload=True,
-                            on_upload=lambda e: handle_upload(e),
-                        ).props('dense').classes('w-full')
-                        kf_thumb = ui.image().style(
-                            'width: 50%; min-width: 0; height: 96px; '
-                            'object-fit: contain; background:#1a1a1e; '
-                            'border: 1px solid #34343c'
-                        )
-                        kf_thumb.visible = False
-                        kf_prompt = ui.textarea(
-                            'Transition prompt (segment ending here)'
-                        ).props('dense outlined debounce=400').classes('w-full')
                         with ui.row().classes('w-full gap-2'):
                             ui.button('Delete', on_click=lambda: delete_current())
 
-                    # Selected-segment panel. Segments are the gaps between
-                    # consecutive keyframes; the prompt is edited on the
-                    # ending keyframe's panel.
+                    # Selected-segment panel. The segment is the unit of work:
+                    # it owns the transition prompt and the start/end frame
+                    # images (shown side by side), plus its render status.
                     with ui.column().classes('w-full gap-2') as seg_panel:
                         seg_panel.visible = False
                         seg_range = ui.label('').classes('text-subtitle2')
-                        seg_prompt = ui.label('').classes('text-caption')
+                        with ui.row().classes('w-full gap-3 items-start'):
+                            with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
+                                ui.label('Start frame').classes(
+                                    'text-caption text-grey w-full text-center'
+                                )
+                                seg_start_thumb = ui.image().style(
+                                    'width: 100%; max-width: 160px; height: 90px; '
+                                    'object-fit: contain; background:#1a1a1e; '
+                                    'border: 1px solid #34343c'
+                                )
+                                seg_start_thumb.visible = False
+                                seg_start_upload = ui.upload(
+                                    label='Upload',
+                                    auto_upload=True,
+                                    on_upload=lambda e: handle_frame_upload(e, 'start'),
+                                ).props('dense').classes('w-full')
+                            with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
+                                ui.label('End frame').classes(
+                                    'text-caption text-grey w-full text-center'
+                                )
+                                seg_end_thumb = ui.image().style(
+                                    'width: 100%; max-width: 160px; height: 90px; '
+                                    'object-fit: contain; background:#1a1a1e; '
+                                    'border: 1px solid #34343c'
+                                )
+                                seg_end_thumb.visible = False
+                                seg_end_upload = ui.upload(
+                                    label='Upload',
+                                    auto_upload=True,
+                                    on_upload=lambda e: handle_frame_upload(e, 'end'),
+                                ).props('dense').classes('w-full')
+                        seg_prompt = ui.textarea('Transition prompt').props(
+                            'dense outlined debounce=400'
+                        ).classes('w-full')
                         seg_status_label = ui.label('Status: empty').classes('text-caption')
                         with ui.row().classes('w-full gap-2'):
                             ui.button('Render segment', icon='movie', on_click=lambda: render_selected_segment())
 
-                # top-right: preview
+                # top-right: preview — the rendered clip for the selected
+                # segment (the start/end frame thumbnails live in the left
+                # editor, not here).
                 with ui.column().classes('items-stretch gap-2 q-pa-md').style(
                     'flex: 1 1 0; min-width: 0; overflow-y: auto; background:#1a1a1e'
                 ):
                     ui.label('Preview').classes('text-subtitle2 text-grey')
                     video_box = ui.column().classes('w-full')
                     video_status = ui.label(
-                        'No rendered segment yet — render one to preview video here.'
+                        'Select a video segment to preview its rendered clip here.'
                     ).classes('text-caption text-grey')
-                    preview_image = ui.image().style('width:100%; aspect-ratio:16/9; background:#232328')
-                    preview_image.visible = False
 
             # ---- timeline toolbar ----------------------------------------
             with ui.row().classes('items-center w-full no-wrap').style(
@@ -222,6 +239,9 @@ def build_page() -> None:
                 return None
             return next((s for s in load_plan().segments if s.id == seg_id), None)
 
+        def current_segment() -> Segment | None:
+            return find_segment(state['sel_id']) if state['sel_kind'] == 'segment' else None
+
         def total() -> float:
             return total_duration.value or 60
 
@@ -233,6 +253,9 @@ def build_page() -> None:
             plan.total_duration = total()
             merge_keyframes_into_plan(plan, state['kfs'])
             save_plan(plan)
+            # Segments are re-derived from the keyframes; refresh the canvas's
+            # prompt indicators to match whichever segments still exist.
+            timeline.set_segment_prompts({s.id: bool(s.prompt) for s in plan.segments})
 
         def push_keyframes() -> None:
             """Python-initiated change: send keyframes to the widget and persist."""
@@ -247,6 +270,11 @@ def build_page() -> None:
             timeline.select(kind, id_)
             show_selection()
 
+        def _set_thumb(img, path: str | None) -> None:
+            url = _image_url(_image_name(path))
+            img.source = url
+            img.visible = bool(url)
+
         def show_selection() -> None:
             kind, id_ = state['sel_kind'], state['sel_id']
 
@@ -256,36 +284,34 @@ def build_page() -> None:
                 seg_panel.visible = False
                 edit_panel.visible = True
                 no_selection_label.visible = False
-                # Setting these fires on_value_change, but the handlers no-op
+                # Setting this fires on_value_change, but the handler no-ops
                 # when the value already matches the keyframe.
                 kf_time.value = kf['time']
-                kf_prompt.value = kf['prompt']
-                url = _image_url(kf['imagePath'])
-                for img in (preview_image, kf_thumb):
-                    if url:
-                        img.source = url
-                    img.visible = bool(url)
+                # Keyframes carry no image; nothing to preview yet.
+                video_box.clear()
+                video_status.text = 'Select a video segment to preview its rendered clip here.'
                 return
 
             if kind == 'segment' and id_ and '-' in id_:
-                a_id, b_id = id_.split('-', 1)
-                a, b = find_kf(a_id), find_kf(b_id)
-                if a and b:
+                seg = find_segment(id_)
+                if seg:
                     sel_title.text = 'Selected Segment'
                     edit_panel.visible = False
                     no_selection_label.visible = False
-                    preview_image.visible = False
-                    kf_thumb.visible = False
                     seg_panel.visible = True
-                    seg_range.text = (
-                        f"{a['time']:.1f}s → {b['time']:.1f}s · {b['time'] - a['time']:.1f}s"
-                    )
-                    seg_prompt.text = (
-                        b['prompt'] or 'No transition prompt set — edit it on the ending keyframe.'
-                    )
+                    a_id, b_id = id_.split('-', 1)
+                    a, b = find_kf(a_id), find_kf(b_id)
+                    if a and b:
+                        seg_range.text = (
+                            f"{a['time']:.1f}s → {b['time']:.1f}s · {b['time'] - a['time']:.1f}s"
+                        )
+                    # Setting this fires on_value_change, but the handler no-ops
+                    # when the value already matches the segment.
+                    seg_prompt.value = seg.prompt or ''
+                    _set_thumb(seg_start_thumb, seg.start_image_path)
+                    _set_thumb(seg_end_thumb, seg.end_image_path)
                     refresh_status(id_)
-                    seg = find_segment(id_)
-                    if seg and seg.status == 'done':
+                    if seg.status == 'done':
                         src = f'/api/projects/clips/{id_}.mp4'
                         if state['video_src'] != src:
                             state['video_src'] = src
@@ -306,8 +332,8 @@ def build_page() -> None:
             seg_panel.visible = False
             edit_panel.visible = False
             no_selection_label.visible = True
-            preview_image.visible = False
-            kf_thumb.visible = False
+            video_box.clear()
+            video_status.text = 'Click a keyframe or a video segment in the timeline.'
 
         def refresh_status(seg_id: str) -> None:
             """Mirror a segment's render status onto its canvas block and,
@@ -348,12 +374,14 @@ def build_page() -> None:
             kf['time'] = t
             push_keyframes()
 
-        def on_prompt_change(e) -> None:
-            kf = current_kf()
-            if kf is None or (e.value or '') == kf['prompt']:
+        def on_seg_prompt_change(e) -> None:
+            seg = current_segment()
+            if seg is None or (e.value or '') == (seg.prompt or ''):
                 return
-            kf['prompt'] = e.value or ''
-            push_keyframes()
+            seg.prompt = e.value or ''
+            save_plan(load_plan())
+            # Live-update the canvas indicator for the segment ending here.
+            timeline.set_segment_prompts({s.id: bool(s.prompt) for s in load_plan().segments})
 
         def on_total_change(e) -> None:
             if not e.value:
@@ -362,24 +390,29 @@ def build_page() -> None:
             commit()
 
         kf_time.on_value_change(on_time_change)
-        kf_prompt.on_value_change(on_prompt_change)
         total_duration.on_value_change(on_total_change)
+        seg_prompt.on_value_change(on_seg_prompt_change)
 
-        async def handle_upload(e) -> None:
+        async def handle_frame_upload(e, which: str) -> None:
             if not is_open():
                 ui.notify('Open a project folder before adding images.', type='warning')
                 return
-            kf = current_kf()
-            if kf is None:
-                ui.notify('Select a keyframe first.', type='warning')
+            seg = current_segment()
+            if seg is None:
+                ui.notify('Select a video segment first.', type='warning')
                 return
             # NiceGUI 1.x/2.x: e.name + e.content. On 3.x use e.file.name /
-            # `await e.file.read()` instead.
-            filename = Path(e.name).name
+            # `await e.file.read()` instead. Prefix the name with which frame it
+            # is, so the start/end frames (and re-uploads) can't collide on disk.
+            filename = f'{which}_{Path(e.name).name}'
             save_image(filename, e.content.read())
-            kf['imagePath'] = filename
-            kf_upload.reset()
-            push_keyframes()
+            if which == 'start':
+                seg.start_image_path = filename
+                seg_start_upload.reset()
+            else:
+                seg.end_image_path = filename
+                seg_end_upload.reset()
+            save_plan(load_plan())
             show_selection()
 
         def delete_current() -> None:
@@ -477,6 +510,7 @@ def build_page() -> None:
             timeline.set_total_duration(plan.total_duration)
             timeline.set_keyframes(state['kfs'])
             timeline.set_segment_statuses({s.id: s.status for s in plan.segments})
+            timeline.set_segment_prompts({s.id: bool(s.prompt) for s in plan.segments})
             select(None, None)
 
         async def open_project() -> None:

@@ -1,4 +1,6 @@
 import json
+import shutil
+import time
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -104,10 +106,33 @@ def load_plan() -> RenderPlan:
     return _plan
 
 
+# How many timeline.json backups to retain in the project's undo/ folder
+# before the oldest ones are removed.
+_MAX_TIMELINE_BACKUPS = 50
+
+
+def _backup_timeline(plan_path: Path) -> None:
+    """Copy the current timeline.json into <project>/undo/ so the previous
+    state can be restored after a save overwrites it. Keeps only the newest
+    _MAX_TIMELINE_BACKUPS copies (oldest deleted first). No-op on a fresh
+    project's first save, when there is no previous timeline to back up."""
+    if not plan_path.exists():
+        return
+    undo_dir = plan_path.parent / "undo"
+    undo_dir.mkdir(exist_ok=True)
+    # time_ns() names sort chronologically, so pruning by name order prunes
+    # the oldest backups first.
+    shutil.copy2(plan_path, undo_dir / f"timeline-{time.time_ns()}.json")
+    backups = sorted(undo_dir.glob("timeline-*.json"))
+    for stale in backups[:-_MAX_TIMELINE_BACKUPS]:
+        stale.unlink()
+
+
 def save_plan(plan: RenderPlan) -> None:
     global _plan
     _plan = plan
     plan_path = project_dir() / "timeline.json"
+    _backup_timeline(plan_path)
     plan_path.write_text(plan.model_dump_json(indent=2))
 
 

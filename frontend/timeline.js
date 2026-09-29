@@ -32,10 +32,11 @@ export default {
   `,
 
   props: {
-    totalDuration: { type: Number, default: 60 },
-    keyframes:     { type: Array,  default: () => [] },   // [{id, time, prompt, imagePath}]
-    segmentStatus: { type: Object, default: () => ({}) }, // segment id -> status
-    selected:      { type: Object, default: () => ({ kind: null, id: null }) },
+    totalDuration:  { type: Number, default: 60 },
+    keyframes:      { type: Array,  default: () => [] },   // [{id, time}]
+    segmentStatus:  { type: Object, default: () => ({}) }, // segment id -> status
+    segmentPrompts: { type: Object, default: () => ({}) }, // segment id -> has prompt
+    selected:       { type: Object, default: () => ({ kind: null, id: null }) },
   },
 
   data() {
@@ -62,8 +63,9 @@ export default {
       deep: true,
     },
     totalDuration() { this.resize(); },
-    segmentStatus: { handler() { this.draw(); }, deep: true },
-    selected:      { handler() { this.draw(); }, deep: true },
+    segmentStatus:  { handler() { this.draw(); }, deep: true },
+    segmentPrompts: { handler() { this.draw(); }, deep: true },
+    selected:       { handler() { this.draw(); }, deep: true },
   },
 
   mounted() {
@@ -96,6 +98,7 @@ export default {
 
     // Segments are derived state: the gap between each pair of consecutive
     // keyframes (sorted by time). IDs are "kfA-kfB" to match the Python side.
+    // The prompt is a segment property (on the Python side), not on the keyframes.
     getSegments() {
       const sorted = [...this.kfs].sort((a, b) => a.time - b.time);
       const segs = [];
@@ -104,10 +107,23 @@ export default {
           id: `${sorted[i].id}-${sorted[i + 1].id}`,
           start: sorted[i].time,
           end: sorted[i + 1].time,
-          prompt: sorted[i + 1].prompt || '',
         });
       }
       return segs;
+    },
+
+    // Which keyframe ids are the *ending* keyframe of a segment that has a
+    // prompt. Segment ids are "kfA-kfB", so the last dash-delimited part is
+    // the ending keyframe (keyframe ids themselves never contain '-').
+    getPromptedEndingKfIds() {
+      const ids = new Set();
+      const sp = this.segmentPrompts || {};
+      for (const segId in sp) {
+        if (!sp[segId]) continue;
+        const parts = segId.split('-');
+        if (parts.length >= 2) ids.add(parts[parts.length - 1]);
+      }
+      return ids;
     },
 
     findKfAt(x, y) {
@@ -183,18 +199,21 @@ export default {
         ctx.stroke();
       }
 
-      // Keyframe dots.
+      // Keyframe dots. Keyframes are bare time markers (no image of their
+      // own); the small blue dot marks that the segment *ending* here has a
+      // transition prompt set (prompt is a segment property).
+      const prompted = this.getPromptedEndingKfIds();
       this.kfs.forEach(kf => {
         const x = this.timeToX(kf.time);
         const isSel = selKind === 'keyframe' && selId === kf.id;
         ctx.beginPath();
         ctx.arc(x, TRACK_Y, KF_R, 0, Math.PI * 2);
-        ctx.fillStyle = isSel ? '#5b8cff' : (kf.imagePath ? '#e6e6ea' : '#48484f');
+        ctx.fillStyle = isSel ? '#5b8cff' : '#c9c9d2';
         ctx.fill();
         ctx.strokeStyle = '#1a1a1e';
         ctx.lineWidth = 2;
         ctx.stroke();
-        if (kf.prompt) {
+        if (prompted.has(kf.id)) {
           ctx.fillStyle = '#5b8cff';
           ctx.beginPath();
           ctx.arc(x, TRACK_Y - 18, 3, 0, Math.PI * 2);
@@ -337,8 +356,6 @@ export default {
         this.kfs.push({
           id,
           time: Math.round(this.xToTime(x) * 10) / 10,
-          prompt: '',
-          imagePath: null,
         });
         this.resize();
         this.emitChange();

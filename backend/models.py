@@ -23,7 +23,6 @@ class Segment(BaseModel):
 class Keyframe(BaseModel):
     id: str
     time: float
-    image_path: str | None = None
 
 
 class RenderPlan(BaseModel):

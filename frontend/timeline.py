@@ -3,11 +3,12 @@ from nicegui.element import Element
 
 class Timeline(Element, component='timeline.js'):
     def __init__(self, *, total_duration=60, keyframes=None, segment_status=None,
-                 on_select=None, on_change=None):
+                 segment_prompts=None, on_select=None, on_change=None):
         super().__init__()
         self._props['totalDuration'] = total_duration
-        self._props['keyframes'] = keyframes or []      # [{id,time,prompt,imagePath}]
+        self._props['keyframes'] = keyframes or []      # [{id,time}]
         self._props['segmentStatus'] = segment_status or {}
+        self._props['segmentPrompts'] = segment_prompts or {}  # segId -> has prompt
         self._props['selected'] = {'kind': None, 'id': None}
         if on_select:
             self.on('select', on_select)   # e.args = {'kind': 'keyframe'|'segment'|None, 'id': str|None}
@@ -24,6 +25,10 @@ class Timeline(Element, component='timeline.js'):
 
     def set_segment_statuses(self, mapping):
         self._props['segmentStatus'] = dict(mapping)
+        self.update()
+
+    def set_segment_prompts(self, mapping):
+        self._props['segmentPrompts'] = dict(mapping)
         self.update()
 
     def set_segment_status(self, seg_id, status):
