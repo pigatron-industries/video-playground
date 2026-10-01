@@ -1,8 +1,9 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from backend.models import OpenProjectRequest, RenderPlan, Segment, SelectionState
-from backend.render import concat_segments, run_render
+from backend.queue import render_queue
+from backend.render import concat_segments
 from backend.storage import active_folder, load_plan, project_dir, save_image, save_plan, set_active_folder
 
 router = APIRouter()
@@ -78,7 +79,7 @@ def get_clip(filename: str) -> FileResponse:
 # Rendering
 # ---------------------------------------------------------------------------
 @router.post("/projects/segments/{segment_id}/render")
-def render_segment(segment_id: str, background_tasks: BackgroundTasks) -> dict:
+def render_segment(segment_id: str) -> dict:
     plan = load_plan()
     segment = next((s for s in plan.segments if s.id == segment_id), None)
     if not segment:
@@ -86,7 +87,7 @@ def render_segment(segment_id: str, background_tasks: BackgroundTasks) -> dict:
 
     segment.status = "queued"
     save_plan(plan)
-    background_tasks.add_task(run_render, segment_id)
+    render_queue.enqueue(segment_id)
     return {"status": "queued", "segment_id": segment_id}
 
 

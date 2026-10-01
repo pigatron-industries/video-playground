@@ -14,6 +14,7 @@ from nicegui import ui
 
 from backend import storage
 from backend.api import router as api_router
+from backend.queue import render_queue
 from frontend.app import PORT, build_page
 
 nicegui_app.include_router(api_router, prefix='/api')
@@ -29,6 +30,11 @@ build_page()
 # the server starts serving, so a restart resumes where the user left off
 # instead of starting with no folder open.
 storage.restore_last_project()
+
+# Start the render-queue worker so segments pushed by the UI or API are picked
+# up and rendered in order. (enqueue also auto-starts it; this just makes the
+# background worker exist from boot.)
+render_queue.start()
 
 if __name__ in {'__main__', '__mp_main__'}:
     ui.run(

@@ -20,7 +20,8 @@ from pathlib import Path
 from nicegui import run, ui
 
 from backend.models import Keyframe, RenderPlan, Segment
-from backend.render import concat_segments, run_render
+from backend.queue import render_queue
+from backend.render import concat_segments
 from backend.storage import (
     active_folder,
     load_plan,
@@ -482,19 +483,23 @@ def build_page() -> None:
                 ui.notify('This segment is already rendering.', type='warning')
                 return
 
+            # Push onto the backend render queue; a single worker thread drains
+            # it in order and runs each job via run_render. Status transitions
+            # (queued -> rendering -> done/error) are written on the shared
+            # in-memory plan, so we just keep refreshing until this segment
+            # reaches a terminal state.
             seg.status = 'queued'
             seg.error = None
             save_plan(plan)
             refresh_status(seg_id)
+            render_queue.enqueue(seg_id)
 
-            # run_render works on the shared in-memory plan, so status changes
-            # are visible here while it runs in a worker thread.
-            task = asyncio.create_task(run.io_bound(run_render, seg_id))
-            while not task.done():
+            while True:
                 await asyncio.sleep(0.5)
                 refresh_status(seg_id)
-            await task
-            refresh_status(seg_id)
+                seg = find_segment(seg_id)
+                if seg is None or seg.status in ('done', 'error'):
+                    break
 
             seg = find_segment(seg_id)
             if seg and seg.status == 'done':
