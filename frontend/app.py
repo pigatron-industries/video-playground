@@ -424,8 +424,10 @@ def build_page() -> None:
                 return
             # NiceGUI 1.x/2.x: e.name + e.content. On 3.x use e.file.name /
             # `await e.file.read()` instead.
-            filename = Path(e.name).name
-            save_image(filename, e.content.read())
+            stored = save_image(Path(e.name).name, e.content.read())
+            # Content-addressed storage: identical uploads resolve to the same
+            # file, so use the stored name (which may differ from the upload's).
+            filename = stored.name
             if which == 'start':
                 seg.start_image_path = filename
                 seg_start_upload.reset()

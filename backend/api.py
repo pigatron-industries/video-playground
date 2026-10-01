@@ -50,7 +50,8 @@ def get_project() -> RenderPlan:
 async def upload_image(file: UploadFile) -> dict:
     data = await file.read()
     dest = save_image(file.filename, data)
-    return {"path": str(dest), "url": f"/api/projects/images/{file.filename}"}
+    # dest.name is the content-addressed (deduplicated) filename.
+    return {"path": str(dest), "url": f"/api/projects/images/{dest.name}"}
 
 
 @router.get("/projects/images/{filename}")

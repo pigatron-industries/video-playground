@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import time
@@ -137,6 +138,15 @@ def save_plan(plan: RenderPlan) -> None:
 
 
 def save_image(filename: str, data: bytes) -> Path:
-    dest = project_dir() / "images" / filename
-    dest.write_bytes(data)
+    """Store an uploaded image under a content-addressed name (<sha256><ext>).
+
+    Identical content always maps to the same file, so re-uploading an
+    existing image returns the already-stored path without writing a
+    duplicate copy. The original upload name is only used for its extension.
+    """
+    digest = hashlib.sha256(data).hexdigest()
+    ext = Path(filename).suffix.lower()
+    dest = project_dir() / "images" / f"{digest}{ext}"
+    if not dest.exists():
+        dest.write_bytes(data)
     return dest
