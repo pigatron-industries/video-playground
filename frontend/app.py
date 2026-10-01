@@ -65,15 +65,44 @@ def merge_keyframes_into_plan(plan: RenderPlan, kfs: list[dict]) -> RenderPlan:
     """Regenerate keyframes + segments from the widget's keyframes, carrying
     over each segment's prompt, start/end frame images and render state
     (status, output, trim, speed, ...) for any segment whose id ("kfA-kfB")
-    still exists. Keyframes are bare time markers — the prompt and frame
-    images are segment properties, so they are preserved here, not re-derived
-    from the keyframes."""
+    still exists. A brand-new segment starts where the previous one ends, so
+    its start frame is seeded from the previous segment's end frame; and when
+    an existing segment is split, the new head piece keeps its start point's
+    frame and the new tail piece keeps its end point's frame — in all cases
+    only filling a slot that is still empty. Keyframes are bare time markers
+    — the prompt and frame images are segment properties, so they are
+    preserved here, not re-derived from the keyframes."""
     kfs = sorted(kfs, key=lambda k: k['time'])
     old = {s.id: s for s in plan.segments}
+    # Old segments keyed by their start / END keyframe (id is "{start}-{end}");
+    # at most one old segment starts (ends) at a given keyframe. Lets a split
+    # carry the old segment's frames over to the new pieces that keep the same
+    # start / end points.
+    old_by_start = {seg.id.split('-', 1)[0]: seg for seg in plan.segments}
+    old_by_end = {seg.id.split('-', 1)[1]: seg for seg in plan.segments}
     segs = []
     for a, b in zip(kfs, kfs[1:]):
         sid = f"{a['id']}-{b['id']}"
-        s = old.get(sid) or Segment(id=sid, start_time=0, end_time=0, duration=0)
+        s = old.get(sid)
+        if s is None:
+            # New segment — seed its frame slots from whatever already
+            # describes the same points so a split or an append keeps the
+            # first/last frame instead of dropping it. Only fills a slot that
+            # is still empty.
+            s = Segment(id=sid, start_time=0, end_time=0, duration=0)
+            # Start frame: prefer the old segment this one split off from
+            # (it kept the same start point); otherwise, for a segment appended
+            # at the end, use the previous segment's end frame.
+            head = old_by_start.get(a['id'])
+            if head is not None and head.start_image_path:
+                s.start_image_path = head.start_image_path
+            elif segs and segs[-1].end_image_path and not s.start_image_path:
+                s.start_image_path = segs[-1].end_image_path
+            # End frame: the old segment this one split off from (it kept the
+            # same end point) keeps its last frame.
+            tail = old_by_end.get(b['id'])
+            if tail is not None and tail.end_image_path and not s.end_image_path:
+                s.end_image_path = tail.end_image_path
         s.start_time, s.end_time = a['time'], b['time']
         s.duration = round(b['time'] - a['time'], 1)
         segs.append(s)
@@ -160,32 +189,24 @@ def build_page() -> None:
                         seg_range = ui.label('').classes('text-subtitle2')
                         with ui.row().classes('w-full gap-3 items-start'):
                             with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                                ui.label('Start frame').classes(
-                                    'text-caption text-grey w-full text-center'
-                                )
                                 seg_start_thumb = ui.image().style(
-                                    'width: 100%; max-width: 160px; height: 90px; '
-                                    'object-fit: contain; background:#1a1a1e; '
-                                    'border: 1px solid #34343c'
-                                )
+                                    'width: 100%; height: 200px; '
+                                    'background:#1a1a1e; border: 1px solid #34343c'
+                                ).props('fit=contain')
                                 seg_start_thumb.visible = False
                                 seg_start_upload = ui.upload(
-                                    label='Upload',
+                                    label='Start frame',
                                     auto_upload=True,
                                     on_upload=lambda e: handle_frame_upload(e, 'start'),
                                 ).props('dense').classes('w-full')
                             with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                                ui.label('End frame').classes(
-                                    'text-caption text-grey w-full text-center'
-                                )
                                 seg_end_thumb = ui.image().style(
-                                    'width: 100%; max-width: 160px; height: 90px; '
-                                    'object-fit: contain; background:#1a1a1e; '
-                                    'border: 1px solid #34343c'
-                                )
+                                    'width: 100%; height: 200px; '
+                                    'background:#1a1a1e; border: 1px solid #34343c'
+                                ).props('fit=contain')
                                 seg_end_thumb.visible = False
                                 seg_end_upload = ui.upload(
-                                    label='Upload',
+                                    label='End frame',
                                     auto_upload=True,
                                     on_upload=lambda e: handle_frame_upload(e, 'end'),
                                 ).props('dense').classes('w-full')
@@ -220,7 +241,7 @@ def build_page() -> None:
 
             # ---- bottom: the timeline widget -----------------------------
             with ui.column().classes('w-full').style(
-                'height: 360px; flex-shrink: 0; overflow: hidden; '
+                'height: 250px; flex-shrink: 0; overflow: hidden; '
                 'border-top: 1px solid #34343c; background:#1a1a1e'
             ):
                 timeline = Timeline().style('width: 100%; height: 100%; min-width: 0;')
@@ -402,9 +423,8 @@ def build_page() -> None:
                 ui.notify('Select a video segment first.', type='warning')
                 return
             # NiceGUI 1.x/2.x: e.name + e.content. On 3.x use e.file.name /
-            # `await e.file.read()` instead. Prefix the name with which frame it
-            # is, so the start/end frames (and re-uploads) can't collide on disk.
-            filename = f'{which}_{Path(e.name).name}'
+            # `await e.file.read()` instead.
+            filename = Path(e.name).name
             save_image(filename, e.content.read())
             if which == 'start':
                 seg.start_image_path = filename
@@ -412,6 +432,20 @@ def build_page() -> None:
             else:
                 seg.end_image_path = filename
                 seg_end_upload.reset()
+                # The next segment starts where this one ends — if it has no
+                # start frame of its own yet, seed it with this image so the
+                # two segments line up.
+                end_kf = seg.id.split('-', 1)[1]
+                nxt = next(
+                    (s for s in load_plan().segments if s.id.startswith(f'{end_kf}-')),
+                    None,
+                )
+                if nxt is not None and not nxt.start_image_path:
+                    nxt.start_image_path = filename
+                    ui.notify(
+                        f"Also set as the start frame of the next segment ({nxt.id}).",
+                        type='positive',
+                    )
             save_plan(load_plan())
             show_selection()
 
