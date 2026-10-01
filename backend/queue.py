@@ -15,7 +15,7 @@ cache (storage._plan), one selection object (api._selection).
 import threading
 from collections import deque
 
-from backend.render import run_render
+from backend.generate import run_generate
 
 
 class RenderQueue:
@@ -70,9 +70,9 @@ class RenderQueue:
                 segment_id = self._items.popleft()
             # Run outside the lock so producers/inspectors aren't blocked by a render.
             try:
-                run_render(segment_id)
+                run_generate(segment_id)
             except Exception as exc:  # noqa: BLE001 — one bad render mustn't stall the queue
-                print(f"render queue: failed to render {segment_id}: {exc}")
+                print(f"render queue: failed to generate {segment_id}: {exc}")
 
     def stop(self) -> None:
         """Signal the worker to exit once it has drained any remaining items."""

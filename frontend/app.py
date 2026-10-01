@@ -216,19 +216,39 @@ def build_page() -> None:
                         ).classes('w-full')
                         seg_status_label = ui.label('Status: empty').classes('text-caption')
                         with ui.row().classes('w-full gap-2'):
-                            ui.button('Render segment', icon='movie', on_click=lambda: render_selected_segment())
+                            ui.button('Generate', icon='movie', on_click=lambda: generate_selected_segment())
 
-                # top-right: preview — the rendered clip for the selected
-                # segment (the start/end frame thumbnails live in the left
-                # editor, not here).
-                with ui.column().classes('items-stretch gap-2 q-pa-md').style(
-                    'flex: 1 1 0; min-width: 0; overflow-y: auto; background:#1a1a1e'
+                # top-right: tabbed panel — "Preview" shows the rendered clip for
+                # the selected segment; "Render Queue" lists what's waiting to be
+                # rendered (kept live by a short timer). Start/end frame thumbnails
+                # live in the left editor, not here.
+                with ui.column().classes('w-full no-wrap').style(
+                    'flex: 1 1 0; min-width: 0; background:#1a1a1e'
                 ):
-                    ui.label('Preview').classes('text-subtitle2 text-grey')
-                    video_box = ui.column().classes('w-full')
-                    video_status = ui.label(
-                        'Select a video segment to preview its rendered clip here.'
-                    ).classes('text-caption text-grey')
+                    with ui.tabs().classes('w-full') as preview_tabs:
+                        preview_tab = ui.tab('Preview', icon='preview')
+                        queue_tab = ui.tab('Render Queue', icon='queue')
+
+                    with ui.tab_panels(preview_tabs, value=preview_tab).style(
+                        'flex: 1 1 auto; min-height: 0'
+                    ).classes('w-full'):
+                        # ---- Preview tab ---------------------------------
+                        with ui.tab_panel(preview_tab):
+                            with ui.column().classes('items-stretch gap-2 q-pa-md w-full').style(
+                                'height: 100%; overflow-y: auto'
+                            ):
+                                video_box = ui.column().classes('w-full')
+                                video_status = ui.label(
+                                    'Select a video segment to preview its rendered clip here.'
+                                ).classes('text-caption text-grey')
+
+                        # ---- Render Queue tab ----------------------------
+                        with ui.tab_panel(queue_tab):
+                            with ui.column().classes('gap-2 q-pa-md w-full').style(
+                                'height: 100%; overflow-y: auto'
+                            ):
+                                queue_count = ui.label('').classes('text-caption text-grey')
+                                queue_box = ui.column().classes('w-full gap-1')
 
             # ---- timeline toolbar ----------------------------------------
             with ui.row().classes('items-center w-full no-wrap').style(
@@ -367,6 +387,40 @@ def build_page() -> None:
                 err = f' — {seg.error}' if seg and seg.error else ''
                 seg_status_label.text = f'Status: {status}{err}'
 
+        def refresh_queue_panel() -> None:
+            """Rebuild the Render Queue tab from render_queue.pending(). Only
+            touches the DOM when the list actually changed, so the short timer
+            that keeps it live is cheap while idle."""
+            items = []
+            for seg_id in render_queue.pending():
+                seg = find_segment(seg_id)
+                status = seg.status if seg else 'queued'
+                label = (
+                    f'{seg_id}  ({seg.start_time:.1f}s – {seg.end_time:.1f}s)'
+                    if seg is not None else seg_id
+                )
+                items.append((label, status))
+            signature = tuple(items)
+            if signature == state.get('queue_sig'):
+                return
+            state['queue_sig'] = signature
+
+            queue_box.clear()
+            with queue_box:
+                for label, status in items:
+                    with ui.row().classes('items-center w-full gap-2').style(
+                        'padding: 6px 10px; background:#232328; border-radius: 6px'
+                    ):
+                        ui.label(label).classes('text-body2')
+                        ui.space()
+                        color = {'queued': 'orange', 'rendering': 'blue'}.get(status, 'grey')
+                        ui.badge(status, color=color)
+            if items:
+                n = len(items)
+                queue_count.text = f'{n} item{"s" if n != 1 else ""} waiting to render'
+            else:
+                queue_count.text = 'Queue is empty — press "Render segment" on a video segment.'
+
         # ------------------------------------------------------------------
         # Widget events
         # ------------------------------------------------------------------
@@ -462,15 +516,15 @@ def build_page() -> None:
             commit()
 
         # ------------------------------------------------------------------
-        # Rendering / concat / save
+        # Generate / concat / save
         # ------------------------------------------------------------------
-        async def render_selected_segment() -> None:
+        async def generate_selected_segment() -> None:
             seg_id = state['sel_id'] if state['sel_kind'] == 'segment' else None
             if not seg_id:
                 ui.notify('Select a video segment in the timeline first.', type='warning')
                 return
             if not is_open():
-                ui.notify('Open a project folder before rendering.', type='warning')
+                ui.notify('Open a project folder before generating.', type='warning')
                 return
 
             commit()  # make sure the segment exists in the plan
@@ -479,13 +533,13 @@ def build_page() -> None:
             if seg is None:
                 ui.notify('That segment is not in the plan.', type='negative')
                 return
-            if seg.status in ('queued', 'rendering'):
-                ui.notify('This segment is already rendering.', type='warning')
+            if seg.status in ('queued', 'generating'):
+                ui.notify('This segment is already generating.', type='warning')
                 return
 
-            # Push onto the backend render queue; a single worker thread drains
-            # it in order and runs each job via run_render. Status transitions
-            # (queued -> rendering -> done/error) are written on the shared
+            # Push onto the backend generate queue; a single worker thread drains
+            # it in order and runs each job via run_generate. Status transitions
+            # (queued -> generating -> done/error) are written on the shared
             # in-memory plan, so we just keep refreshing until this segment
             # reaches a terminal state.
             seg.status = 'queued'
@@ -493,6 +547,7 @@ def build_page() -> None:
             save_plan(plan)
             refresh_status(seg_id)
             render_queue.enqueue(seg_id)
+            refresh_queue_panel()  # reflect the new item in the Render Queue tab now
 
             while True:
                 await asyncio.sleep(0.5)
@@ -566,6 +621,11 @@ def build_page() -> None:
             folder = set_active_folder(path)
             load_project_into_ui()
             ui.notify(f'Opened project: {folder}', type='positive')
+
+        # Keep the Render Queue tab live: refresh on a short interval so it
+        # reflects items enqueued from either the UI or the API (cheap — it only
+        # rebuilds when the list actually changes).
+        ui.timer(0.5, refresh_queue_panel)
 
         # Restore on page load / browser refresh if the server already has a
         # project open (replaces the old first-poll restore).
