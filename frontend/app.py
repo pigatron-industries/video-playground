@@ -181,61 +181,113 @@ def build_page() -> None:
             with ui.row().classes('w-full no-wrap').style(
                 'flex: 1 1 auto; min-height: 0; overflow: hidden'
             ):
-                # top-left: editor — two tabs. "Segment" edits the selected
-                # keyframe/segment (the unit of work); "Project" holds
-                # project-wide settings such as the generation resolution.
+                # top-left: editor — three tabs. "Keyframe" edits the selected
+                # keyframe (a bare time marker); "Segment" edits the selected
+                # segment (the unit of work: prompt, start/end frames, render);
+                # "Project" holds project-wide settings such as resolution. The
+                # active tab follows whatever is currently selected in the timeline.
                 with ui.column().classes('w-full no-wrap').style(
                     'flex: 1 1 0; min-width: 0; border-right: 1px solid #34343c; background:#232328'
                 ):
                     with ui.tabs().classes('w-full') as left_tabs:
+                        keyframe_tab = ui.tab('Keyframe')
                         segment_tab = ui.tab('Segment')
                         project_tab = ui.tab('Project')
 
-                    with ui.tab_panels(left_tabs, value=segment_tab).style(
+                    # Shared hint shown above the editor panels when nothing is selected.
+                    no_selection_label = ui.label(
+                        'Click a keyframe or a video segment in the timeline.'
+                    ).classes('text-caption text-grey w-full').style('padding: 8px 10px')
+
+                    with ui.tab_panels(left_tabs, value=keyframe_tab).style(
                         'flex: 1 1 auto; min-height: 0'
                     ).classes('w-full'):
-                        # ---- Segment tab ---------------------------------
-                        with ui.tab_panel(segment_tab):
+                        # ---- Keyframe tab --------------------------------
+                        # Keyframes are bare time markers on the timeline. This tab edits
+                        # the selected keyframe's position and lets you delete it. The
+                        # prompt and start/end frame images belong to the segment, not here.
+                        with ui.tab_panel(keyframe_tab):
                             with ui.column().classes('gap-2 w-full').style(
                                 'height: 100%; overflow-y: auto; padding: 10px'
                             ):
-                                no_selection_label = ui.label(
-                                    'Click a keyframe or a video segment in the timeline.'
-                                ).classes('text-caption text-grey')
-
-                                # Keyframe editor — keyframes are bare time markers. The
-                                # prompt and start/end frame images belong to the segment,
-                                # so they live in the segment panel below, not here.
-                                with ui.column().classes('w-full gap-2') as edit_panel:
-                                    edit_panel.visible = False
+                                with ui.column().classes('w-full gap-2') as kf_panel:
+                                    kf_panel.visible = False
                                     kf_time = ui.number('Time (s)', value=0).props('dense outlined')
                                     with ui.row().classes('w-full gap-2'):
                                         ui.button('Delete', on_click=lambda: delete_current())
 
-                                # Selected-segment panel. The segment is the unit of work:
-                                # it owns the transition prompt and the start/end frame
-                                # images (shown side by side), plus its render status.
+                        # ---- Segment tab ---------------------------------
+                        # The segment is the unit of work: it owns the transition prompt,
+                        # the start/end frame images (shown side by side), and its render status.
+                        with ui.tab_panel(segment_tab):
+                            with ui.column().classes('gap-2 w-full').style(
+                                'height: 100%; overflow-y: auto; padding: 10px'
+                            ):
                                 with ui.column().classes('w-full gap-2') as seg_panel:
                                     seg_panel.visible = False
                                     seg_range = ui.label('').classes('text-subtitle2')
                                     with ui.row().classes('w-full gap-3 items-start'):
                                         with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                                            seg_start_thumb = ui.image().style(
-                                                'width: 100%; height: 140px; '
-                                                'background:#1a1a1e; border: 1px solid #34343c'
-                                            ).props('fit=contain')
-                                            seg_start_thumb.visible = False
+                                            # Relative wrapper so the corner buttons can sit on
+                                            # the thumbnail; min-height keeps them anchored even
+                                            # before a start frame exists (the image is hidden).
+                                            with ui.element('div').style(
+                                                'position: relative; width: 100%; min-height: 140px'
+                                            ):
+                                                seg_start_thumb = ui.image().style(
+                                                    'width: 100%; height: 140px; '
+                                                    'background:#1a1a1e; border: 1px solid #34343c'
+                                                ).props('fit=contain')
+                                                seg_start_thumb.visible = False
+                                                seg_start_delete = ui.button(
+                                                    icon='close',
+                                                    on_click=lambda: remove_frame('start'),
+                                                ).props('flat dense round color=white size=sm').style(
+                                                    'position: absolute; top: 4px; right: 4px;'
+                                                )
+                                                seg_start_delete.visible = False
+                                                # Top-left corner: pull the previous segment's end
+                                                # frame in as this segment's start frame.
+                                                seg_start_copy = ui.button(
+                                                    icon='arrow_right',
+                                                    on_click=lambda: copy_prev_end_frame(),
+                                                ).props('flat dense round color=white size=sm').style(
+                                                    'position: absolute; top: 4px; left: 4px;'
+                                                )
+                                                seg_start_copy.visible = False
                                             seg_start_upload = ui.upload(
                                                 label='Start frame',
                                                 auto_upload=True,
                                                 on_upload=lambda e: handle_frame_upload(e, 'start'),
                                             ).props('dense').classes('w-full')
                                         with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                                            seg_end_thumb = ui.image().style(
-                                                'width: 100%; height: 140px; '
-                                                'background:#1a1a1e; border: 1px solid #34343c'
-                                            ).props('fit=contain')
-                                            seg_end_thumb.visible = False
+                                            # Same relative wrapper as the start column so the
+                                            # corner buttons have a stable anchor even before an
+                                            # end frame exists (the image is hidden).
+                                            with ui.element('div').style(
+                                                'position: relative; width: 100%; min-height: 140px'
+                                            ):
+                                                seg_end_thumb = ui.image().style(
+                                                    'width: 100%; height: 140px; '
+                                                    'background:#1a1a1e; border: 1px solid #34343c'
+                                                ).props('fit=contain')
+                                                seg_end_thumb.visible = False
+                                                seg_end_delete = ui.button(
+                                                    icon='close',
+                                                    on_click=lambda: remove_frame('end'),
+                                                ).props('flat dense round color=white size=sm').style(
+                                                    'position: absolute; top: 4px; right: 4px;'
+                                                )
+                                                seg_end_delete.visible = False
+                                                # Top-left corner: duplicate this segment's start
+                                                # frame into its end slot.
+                                                seg_end_copy = ui.button(
+                                                    icon='arrow_right',
+                                                    on_click=lambda: copy_start_to_end_frame(),
+                                                ).props('flat dense round color=white size=sm').style(
+                                                    'position: absolute; top: 4px; left: 4px;'
+                                                )
+                                                seg_end_copy.visible = False
                                             seg_end_upload = ui.upload(
                                                 label='End frame',
                                                 auto_upload=True,
@@ -375,9 +427,12 @@ def build_page() -> None:
 
             if kind == 'keyframe' and find_kf(id_):
                 kf = find_kf(id_)
-                left_tabs.set_value(segment_tab)  # jump to the editor tab
+                # Keyframe selected -> show the Keyframe tab, hide the Segment one.
+                keyframe_tab.visible = True
+                segment_tab.visible = False
+                left_tabs.set_value(keyframe_tab)
                 seg_panel.visible = False
-                edit_panel.visible = True
+                kf_panel.visible = True
                 no_selection_label.visible = False
                 # Setting this fires on_value_change, but the handler no-ops
                 # when the value already matches the keyframe.
@@ -390,8 +445,11 @@ def build_page() -> None:
             if kind == 'segment' and id_ and '-' in id_:
                 seg = find_segment(id_)
                 if seg:
-                    left_tabs.set_value(segment_tab)  # jump to the editor tab
-                    edit_panel.visible = False
+                    # Segment selected -> show the Segment tab, hide the Keyframe one.
+                    keyframe_tab.visible = False
+                    segment_tab.visible = True
+                    left_tabs.set_value(segment_tab)
+                    kf_panel.visible = False
                     no_selection_label.visible = False
                     seg_panel.visible = True
                     a_id, b_id = id_.split('-', 1)
@@ -405,6 +463,14 @@ def build_page() -> None:
                     seg_prompt.value = seg.prompt or ''
                     _set_thumb(seg_start_thumb, seg.start_image_path)
                     _set_thumb(seg_end_thumb, seg.end_image_path)
+                    # Corner delete buttons only make sense when a frame is set; the copy
+                    # buttons only when there is something to copy (the previous segment's
+                    # end frame for start, this segment's own start frame for end).
+                    seg_start_delete.visible = bool(seg.start_image_path)
+                    seg_end_delete.visible = bool(seg.end_image_path)
+                    prev_seg = previous_segment(seg)
+                    seg_start_copy.visible = bool(prev_seg and prev_seg.end_image_path)
+                    seg_end_copy.visible = bool(seg.start_image_path)
                     # Offer earlier takes of this segment (newest first).
                     history_opts = {
                         p: ('Previous render' if i == 0 else f'Earlier render {i + 1}')
@@ -436,10 +502,14 @@ def build_page() -> None:
                         video_status.text = 'No rendered clip yet — render the segment to preview video here.'
                     return
 
-            # Nothing (valid) selected.
+            # Nothing (valid) selected — hide both editor tabs, fall back to the
+            # Project tab (the only one left), and show the hint.
             state['sel_kind'] = state['sel_id'] = None
+            keyframe_tab.visible = False
+            segment_tab.visible = False
+            left_tabs.set_value(project_tab)
+            kf_panel.visible = False
             seg_panel.visible = False
-            edit_panel.visible = False
             no_selection_label.visible = True
             video_box.clear()
             video_status.text = 'Click a keyframe or a video segment in the timeline.'
@@ -606,6 +676,66 @@ def build_page() -> None:
                     )
             save_plan(load_plan())
             show_selection()
+
+        def remove_frame(which: str) -> None:
+            """Clear this segment's start/end frame slot and its uploader.
+
+            Only the reference is cleared — the underlying image file stays on
+            disk (content-addressed, possibly shared by other segments)."""
+            seg = current_segment()
+            if seg is None:
+                return
+            if which == 'start':
+                seg.start_image_path = None
+                seg_start_upload.reset()
+            else:
+                seg.end_image_path = None
+                seg_end_upload.reset()
+            save_plan(load_plan())
+            show_selection()
+
+        def previous_segment(seg: Segment) -> Segment | None:
+            """The segment ending where ``seg`` starts — its predecessor in time."""
+            if not is_open():
+                return None
+            start_kf = seg.id.split('-', 1)[0]
+            for s in load_plan().segments:
+                # Segment ids are "{start}-{end}"; keyframe ids never contain '-'.
+                if s.id != seg.id and s.id.rsplit('-', 1)[-1] == start_kf:
+                    return s
+            return None
+
+        def copy_prev_end_frame() -> None:
+            """Copy the previous segment's end frame into this segment's start slot."""
+            seg = current_segment()
+            if seg is None:
+                ui.notify('Select a video segment first.', type='warning')
+                return
+            prev = previous_segment(seg)
+            if prev is None or not prev.end_image_path:
+                ui.notify('No end frame to copy from the previous segment.', type='negative')
+                return
+            seg.start_image_path = prev.end_image_path
+            save_plan(load_plan())
+            show_selection()
+            ui.notify(
+                f"Copied {prev.id}'s end frame as this segment's start frame.",
+                type='positive',
+            )
+
+        def copy_start_to_end_frame() -> None:
+            """Copy this segment's own start frame into its end slot."""
+            seg = current_segment()
+            if seg is None:
+                ui.notify('Select a video segment first.', type='warning')
+                return
+            if not seg.start_image_path:
+                ui.notify('No start frame to copy from yet.', type='negative')
+                return
+            seg.end_image_path = seg.start_image_path
+            save_plan(load_plan())
+            show_selection()
+            ui.notify("Copied this segment's start frame as its end frame.", type='positive')
 
         def delete_current() -> None:
             kf = current_kf()
