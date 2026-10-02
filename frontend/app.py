@@ -30,6 +30,7 @@ from backend.storage import (
     set_active_folder,
 )
 from frontend.keyframe_tab import KeyframeTab
+from frontend.media_tab import MediaTab
 from frontend.preview_tab import PreviewTab
 from frontend.project_tab import ProjectTab
 from frontend.render_queue_tab import RenderQueueTab
@@ -246,14 +247,15 @@ def build_page() -> None:
                 # rendered (kept live by a short timer). Start/end frame thumbnails
                 # live in the left editor, not here.
                 with ui.column().classes('w-full no-wrap').style(
-                    'flex: 1 1 0; min-width: 0; border-right: 1px solid #34343c; background:#232328'
+                    'flex: 1 1 0; min-width: 0; border-right: 1px solid #34343c; background:#232328; height: 100%; overflow: hidden'
                 ):
                     with ui.tabs().classes('w-full') as preview_tabs:
                         preview_tab = ui.tab('Preview')
                         queue_tab = ui.tab('Render Queue')
+                        media_tab = ui.tab('Media')
 
                     with ui.tab_panels(preview_tabs, value=preview_tab).style(
-                        'flex: 1 1 auto; min-height: 0'
+                        'flex: 1 1 auto; min-height: 0;'
                     ).classes('w-full'):
                         # ---- Preview tab ---------------------------------
                         # A standalone widget (frontend/preview_tab.py) — the rendered
@@ -266,6 +268,13 @@ def build_page() -> None:
                         # waiting to render; kept live by a short timer in app.py below.
                         with ui.tab_panel(queue_tab):
                             queue_widget = RenderQueueTab()
+
+                        # ---- Media tab -----------------------------------
+                        # A standalone widget (frontend/media_tab.py) — every image and clip
+                        # stored in the project, with a thumbnail, its type, and how many
+                        # segments use it; kept live by the same short timer as the queue.
+                        with ui.tab_panel(media_tab):
+                            media_widget = MediaTab()
 
             # ---- timeline toolbar ----------------------------------------
             with ui.row().classes('items-center w-full no-wrap').style(
@@ -439,6 +448,50 @@ def build_page() -> None:
                 )
                 items.append((label, status))
             queue_widget.set_items(items)
+
+        def _media_usage_counts(plan: RenderPlan) -> tuple[dict[str, int], dict[str, int]]:
+            """How many distinct segments reference each image / clip file.
+
+            A segment counts once per file even if it uses the same image as
+            both its start and end frame; a clip referenced by a segment's
+            current output or any of its earlier takes all count for that
+            segment."""
+            images: dict[str, int] = {}
+            clips: dict[str, int] = {}
+            for seg in plan.segments:
+                img_names = {Path(p).name for p in (seg.start_image_path, seg.end_image_path) if p}
+                for name in img_names:
+                    images[name] = images.get(name, 0) + 1
+                clip_names = set()
+                if seg.output_path:
+                    clip_names.add(Path(seg.output_path).name)
+                for take in seg.history or []:
+                    clip_names.add(Path(take).name)
+                for name in clip_names:
+                    clips[name] = clips.get(name, 0) + 1
+            return images, clips
+
+        def refresh_media_panel() -> None:
+            """Rebuild the Media tab from the project's images/ and clips/ folders.
+
+            Files are listed straight off disk (content-addressed names), so
+            anything saved by an upload or a finished render shows up; each file
+            is annotated with how many segments reference it in the plan."""
+            if not is_open():
+                media_widget.set_items([])
+                return
+            folder = active_folder()
+            image_counts, clip_counts = _media_usage_counts(load_plan())
+            items = [
+                {'kind': 'image', 'name': p.name,
+                 'url': f'/api/projects/images/{p.name}', 'uses': image_counts.get(p.name, 0)}
+                for p in sorted((folder / 'images').glob('*')) if p.is_file()
+            ] + [
+                {'kind': 'video', 'name': p.name,
+                 'url': f'/api/projects/clips/{p.name}', 'uses': clip_counts.get(p.name, 0)}
+                for p in sorted((folder / 'clips').glob('*')) if p.is_file()
+            ]
+            media_widget.set_items(items)
 
         # ------------------------------------------------------------------
         # Widget events
@@ -730,10 +783,15 @@ def build_page() -> None:
             load_project_into_ui()
             ui.notify(f'Opened project: {folder}', type='positive')
 
-        # Keep the Render Queue tab live: refresh on a short interval so it
-        # reflects items enqueued from either the UI or the API (cheap — it only
-        # rebuilds when the list actually changes).
-        ui.timer(0.5, refresh_queue_panel)
+        # Keep the Render Queue and Media tabs live: refresh on a short interval
+        # so they reflect items enqueued from either the UI or the API, and new
+        # files saved by uploads or finished renders (cheap — each widget only
+        # rebuilds when its list actually changes).
+        def refresh_live_panels() -> None:
+            refresh_queue_panel()
+            refresh_media_panel()
+
+        ui.timer(0.5, refresh_live_panels)
 
         # Restore on page load / browser refresh if the server already has a
         # project open (replaces the old first-poll restore).
