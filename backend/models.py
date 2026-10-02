@@ -17,6 +17,10 @@ class Segment(BaseModel):
     speed_factor: float | None = None
     status: Literal["empty", "queued", "rendering", "done", "error"] = "empty"
     output_path: str | None = None
+    # Earlier renders of this segment, newest first (content-addressed clip
+    # paths). A re-render pushes the previous take here instead of overwriting
+    # its file, so old takes stay playable and reusable.
+    history: list[str] = []
     error: str | None = None
 
 
@@ -27,6 +31,12 @@ class Keyframe(BaseModel):
 
 class RenderPlan(BaseModel):
     total_duration: float = 60
+    # Project-wide generation resolution ([width, height]) applied to every
+    # rendered clip. Defaults match the workflow's documented example; edit via
+    # the "Project" tab in the UI. Old timeline.json files without these fields
+    # fall back to the defaults on load.
+    width: int = 768
+    height: int = 448
     keyframes: list[Keyframe] = []
     segments: list[Segment] = []
 

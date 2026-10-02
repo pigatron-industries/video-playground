@@ -37,6 +37,18 @@ PORT = 8099
 
 LEGACY_IMAGE_PREFIX = '/api/projects/images/'
 
+# Common generation resolutions offered in the Project tab dropdown, as
+# {display label: (width, height)}. The plan stores width/height separately so
+# generate.py can pass [width, height] straight to the workflow API.
+RESOLUTIONS = {
+    'Landscape · 768 × 448': (768, 448),
+    'Landscape · 1344 × 768': (1344, 768),
+    'Portrait · 448 × 768': (448, 768),
+    'Portrait · 768 × 1344': (768, 1344),
+}
+DEFAULT_RESOLUTION_LABEL = 'Landscape · 768 × 448'
+RES_BY_SIZE = {(w, h): label for label, (w, h) in RESOLUTIONS.items()}
+
 
 # ---------------------------------------------------------------------------
 # Plan <-> widget conversion (pure functions)
@@ -126,6 +138,11 @@ def build_page() -> None:
             /* Keep the start/end frame uploaders compact — the file list is
                redundant since the thumbnail above each already shows the image. */
             .q-uploader__list { display: none; }
+            /* Compact tab bars (Quasar's default 48px eats vertical space). */
+            .q-tabs .q-tab { min-height: 32px; font-size: 13px; }
+            /* Let each tab panel fill its flex-sized container so the inner
+               columns can scroll instead of overflowing past the viewport. */
+            .q-tab-panel { height: 100%; min-height: 0; }
             """
         )
 
@@ -164,78 +181,114 @@ def build_page() -> None:
             with ui.row().classes('w-full no-wrap').style(
                 'flex: 1 1 auto; min-height: 0; overflow: hidden'
             ):
-                # top-left: editor
-                with ui.column().classes('q-pa-md gap-2').style(
-                    'flex: 1 1 0; min-width: 0; overflow-y: auto; border-right: 1px solid #34343c; background:#232328'
+                # top-left: editor — two tabs. "Segment" edits the selected
+                # keyframe/segment (the unit of work); "Project" holds
+                # project-wide settings such as the generation resolution.
+                with ui.column().classes('w-full no-wrap').style(
+                    'flex: 1 1 0; min-width: 0; border-right: 1px solid #34343c; background:#232328'
                 ):
-                    sel_title = ui.label('Selected Keyframe').classes('text-subtitle2 text-grey')
-                    no_selection_label = ui.label(
-                        'Click a keyframe or a video segment in the timeline.'
-                    ).classes('text-caption text-grey')
+                    with ui.tabs().classes('w-full') as left_tabs:
+                        segment_tab = ui.tab('Segment')
+                        project_tab = ui.tab('Project')
 
-                    # Keyframe editor — keyframes are bare time markers. The
-                    # prompt and start/end frame images belong to the segment,
-                    # so they live in the segment panel below, not here.
-                    with ui.column().classes('w-full gap-2') as edit_panel:
-                        edit_panel.visible = False
-                        kf_time = ui.number('Time (s)', value=0).props('dense outlined')
-                        with ui.row().classes('w-full gap-2'):
-                            ui.button('Delete', on_click=lambda: delete_current())
+                    with ui.tab_panels(left_tabs, value=segment_tab).style(
+                        'flex: 1 1 auto; min-height: 0'
+                    ).classes('w-full'):
+                        # ---- Segment tab ---------------------------------
+                        with ui.tab_panel(segment_tab):
+                            with ui.column().classes('gap-2 w-full').style(
+                                'height: 100%; overflow-y: auto; padding: 10px'
+                            ):
+                                no_selection_label = ui.label(
+                                    'Click a keyframe or a video segment in the timeline.'
+                                ).classes('text-caption text-grey')
 
-                    # Selected-segment panel. The segment is the unit of work:
-                    # it owns the transition prompt and the start/end frame
-                    # images (shown side by side), plus its render status.
-                    with ui.column().classes('w-full gap-2') as seg_panel:
-                        seg_panel.visible = False
-                        seg_range = ui.label('').classes('text-subtitle2')
-                        with ui.row().classes('w-full gap-3 items-start'):
-                            with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                                seg_start_thumb = ui.image().style(
-                                    'width: 100%; height: 200px; '
-                                    'background:#1a1a1e; border: 1px solid #34343c'
-                                ).props('fit=contain')
-                                seg_start_thumb.visible = False
-                                seg_start_upload = ui.upload(
-                                    label='Start frame',
-                                    auto_upload=True,
-                                    on_upload=lambda e: handle_frame_upload(e, 'start'),
-                                ).props('dense').classes('w-full')
-                            with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                                seg_end_thumb = ui.image().style(
-                                    'width: 100%; height: 200px; '
-                                    'background:#1a1a1e; border: 1px solid #34343c'
-                                ).props('fit=contain')
-                                seg_end_thumb.visible = False
-                                seg_end_upload = ui.upload(
-                                    label='End frame',
-                                    auto_upload=True,
-                                    on_upload=lambda e: handle_frame_upload(e, 'end'),
-                                ).props('dense').classes('w-full')
-                        seg_prompt = ui.textarea('Transition prompt').props(
-                            'dense outlined debounce=400'
-                        ).classes('w-full')
-                        seg_status_label = ui.label('Status: empty').classes('text-caption')
-                        with ui.row().classes('w-full gap-2'):
-                            ui.button('Generate', icon='movie', on_click=lambda: generate_selected_segment())
+                                # Keyframe editor — keyframes are bare time markers. The
+                                # prompt and start/end frame images belong to the segment,
+                                # so they live in the segment panel below, not here.
+                                with ui.column().classes('w-full gap-2') as edit_panel:
+                                    edit_panel.visible = False
+                                    kf_time = ui.number('Time (s)', value=0).props('dense outlined')
+                                    with ui.row().classes('w-full gap-2'):
+                                        ui.button('Delete', on_click=lambda: delete_current())
+
+                                # Selected-segment panel. The segment is the unit of work:
+                                # it owns the transition prompt and the start/end frame
+                                # images (shown side by side), plus its render status.
+                                with ui.column().classes('w-full gap-2') as seg_panel:
+                                    seg_panel.visible = False
+                                    seg_range = ui.label('').classes('text-subtitle2')
+                                    with ui.row().classes('w-full gap-3 items-start'):
+                                        with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
+                                            seg_start_thumb = ui.image().style(
+                                                'width: 100%; height: 140px; '
+                                                'background:#1a1a1e; border: 1px solid #34343c'
+                                            ).props('fit=contain')
+                                            seg_start_thumb.visible = False
+                                            seg_start_upload = ui.upload(
+                                                label='Start frame',
+                                                auto_upload=True,
+                                                on_upload=lambda e: handle_frame_upload(e, 'start'),
+                                            ).props('dense').classes('w-full')
+                                        with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
+                                            seg_end_thumb = ui.image().style(
+                                                'width: 100%; height: 140px; '
+                                                'background:#1a1a1e; border: 1px solid #34343c'
+                                            ).props('fit=contain')
+                                            seg_end_thumb.visible = False
+                                            seg_end_upload = ui.upload(
+                                                label='End frame',
+                                                auto_upload=True,
+                                                on_upload=lambda e: handle_frame_upload(e, 'end'),
+                                            ).props('dense').classes('w-full')
+                                    seg_prompt = ui.textarea('Transition prompt').props(
+                                        'dense outlined debounce=400'
+                                    ).classes('w-full')
+                                    seg_status_label = ui.label('Status: empty').classes('text-caption')
+                                    # Earlier takes of this segment (content-addressed,
+                                    # newest first) — pick one to preview it.
+                                    seg_history_select = ui.select(
+                                        options={},
+                                        label='Earlier renders',
+                                    ).props('dense outlined dark').classes('w-full')
+                                    seg_history_select.visible = False
+                                    with ui.row().classes('w-full gap-2'):
+                                        generate_btn = ui.button(
+                                            'Generate', icon='movie', on_click=lambda: generate_selected_segment()
+                                        )
+
+                        # ---- Project tab ---------------------------------
+                        with ui.tab_panel(project_tab):
+                            with ui.column().classes('gap-2 w-full').style(
+                                'height: 100%; overflow-y: auto; padding: 10px'
+                            ):
+                                ui.label('Project Settings').classes('text-subtitle2 text-grey')
+                                ui.label(
+                                    'Resolution used when generating video clips.'
+                                ).classes('text-caption text-grey')
+                                proj_resolution = ui.select(
+                                    options=list(RESOLUTIONS),
+                                    value=DEFAULT_RESOLUTION_LABEL,
+                                ).props('dense outlined dark').classes('w-full')
 
                 # top-right: tabbed panel — "Preview" shows the rendered clip for
                 # the selected segment; "Render Queue" lists what's waiting to be
                 # rendered (kept live by a short timer). Start/end frame thumbnails
                 # live in the left editor, not here.
                 with ui.column().classes('w-full no-wrap').style(
-                    'flex: 1 1 0; min-width: 0; background:#1a1a1e'
+                    'flex: 1 1 0; min-width: 0; border-right: 1px solid #34343c; background:#232328'
                 ):
                     with ui.tabs().classes('w-full') as preview_tabs:
-                        preview_tab = ui.tab('Preview', icon='preview')
-                        queue_tab = ui.tab('Render Queue', icon='queue')
+                        preview_tab = ui.tab('Preview')
+                        queue_tab = ui.tab('Render Queue')
 
                     with ui.tab_panels(preview_tabs, value=preview_tab).style(
                         'flex: 1 1 auto; min-height: 0'
                     ).classes('w-full'):
                         # ---- Preview tab ---------------------------------
                         with ui.tab_panel(preview_tab):
-                            with ui.column().classes('items-stretch gap-2 q-pa-md w-full').style(
-                                'height: 100%; overflow-y: auto'
+                            with ui.column().classes('items-stretch gap-2 w-full').style(
+                                'height: 100%; overflow-y: auto; padding: 10px'
                             ):
                                 video_box = ui.column().classes('w-full')
                                 video_status = ui.label(
@@ -244,8 +297,8 @@ def build_page() -> None:
 
                         # ---- Render Queue tab ----------------------------
                         with ui.tab_panel(queue_tab):
-                            with ui.column().classes('gap-2 q-pa-md w-full').style(
-                                'height: 100%; overflow-y: auto'
+                            with ui.column().classes('gap-2 w-full').style(
+                                'height: 100%; overflow-y: auto; padding: 10px'
                             ):
                                 queue_count = ui.label('').classes('text-caption text-grey')
                                 queue_box = ui.column().classes('w-full gap-1')
@@ -322,7 +375,7 @@ def build_page() -> None:
 
             if kind == 'keyframe' and find_kf(id_):
                 kf = find_kf(id_)
-                sel_title.text = 'Selected Keyframe'
+                left_tabs.set_value(segment_tab)  # jump to the editor tab
                 seg_panel.visible = False
                 edit_panel.visible = True
                 no_selection_label.visible = False
@@ -337,7 +390,7 @@ def build_page() -> None:
             if kind == 'segment' and id_ and '-' in id_:
                 seg = find_segment(id_)
                 if seg:
-                    sel_title.text = 'Selected Segment'
+                    left_tabs.set_value(segment_tab)  # jump to the editor tab
                     edit_panel.visible = False
                     no_selection_label.visible = False
                     seg_panel.visible = True
@@ -352,9 +405,24 @@ def build_page() -> None:
                     seg_prompt.value = seg.prompt or ''
                     _set_thumb(seg_start_thumb, seg.start_image_path)
                     _set_thumb(seg_end_thumb, seg.end_image_path)
+                    # Offer earlier takes of this segment (newest first).
+                    history_opts = {
+                        p: ('Previous render' if i == 0 else f'Earlier render {i + 1}')
+                        for i, p in enumerate(seg.history or [])
+                    }
+                    seg_history_select.options = history_opts
+                    seg_history_select.value = None
+                    seg_history_select.visible = bool(history_opts)
                     refresh_status(id_)
                     if seg.status == 'done':
-                        src = f'/api/projects/clips/{id_}.mp4'
+                        # Clips are content-addressed (<sha256>.mp4); fall back
+                        # to the legacy segment-id name for takes rendered
+                        # before that scheme.
+                        clip_name = (
+                            Path(seg.output_path).name
+                            if seg.output_path else f'{id_}.mp4'
+                        )
+                        src = f'/api/projects/clips/{clip_name}'
                         if state['video_src'] != src:
                             state['video_src'] = src
                             video_box.clear()
@@ -370,12 +438,17 @@ def build_page() -> None:
 
             # Nothing (valid) selected.
             state['sel_kind'] = state['sel_id'] = None
-            sel_title.text = 'Selected Keyframe'
             seg_panel.visible = False
             edit_panel.visible = False
             no_selection_label.visible = True
             video_box.clear()
             video_status.text = 'Click a keyframe or a video segment in the timeline.'
+
+        def sync_generate_button() -> None:
+            """Disable Generate while the selected segment is queued or rendering."""
+            seg = find_segment(state['sel_id']) if state['sel_kind'] == 'segment' else None
+            busy = bool(seg and seg.status in ('queued', 'rendering'))
+            generate_btn.disable() if busy else generate_btn.enable()
 
         def refresh_status(seg_id: str) -> None:
             """Mirror a segment's render status onto its canvas block and,
@@ -386,6 +459,7 @@ def build_page() -> None:
             if state['sel_id'] == seg_id:
                 err = f' — {seg.error}' if seg and seg.error else ''
                 seg_status_label.text = f'Status: {status}{err}'
+            sync_generate_button()
 
         def refresh_queue_panel() -> None:
             """Rebuild the Render Queue tab from render_queue.pending(). Only
@@ -459,15 +533,42 @@ def build_page() -> None:
             # Live-update the canvas indicator for the segment ending here.
             timeline.set_segment_prompts({s.id: bool(s.prompt) for s in load_plan().segments})
 
+        def on_history_select(e) -> None:
+            """Preview an earlier take of the selected segment."""
+            if not e.value or state['sel_kind'] != 'segment':
+                return
+            url = f'/api/projects/clips/{Path(e.value).name}'
+            state['video_src'] = url
+            video_box.clear()
+            with video_box:
+                ui.video(f'{url}?t={int(time.time())}').style(
+                    'width:100%; aspect-ratio:16/9; background:#111')
+            video_status.text = 'Showing an earlier render — re-select the segment for the latest.'
+
         def on_total_change(e) -> None:
             if not e.value:
                 return
             timeline.set_total_duration(e.value)
             commit()
 
+        def on_resolution_change(e) -> None:
+            """Persist the project's generation resolution (Project tab). The
+            guard skips the save when nothing actually changed, so loading a
+            project can't trigger a redundant write."""
+            if not is_open() or e.value not in RESOLUTIONS:
+                return
+            w, h = RESOLUTIONS[e.value]
+            plan = load_plan()
+            if (w, h) == (plan.width, plan.height):
+                return
+            plan.width, plan.height = w, h
+            save_plan(plan)
+
         kf_time.on_value_change(on_time_change)
         total_duration.on_value_change(on_total_change)
         seg_prompt.on_value_change(on_seg_prompt_change)
+        seg_history_select.on_value_change(on_history_select)
+        proj_resolution.on_value_change(on_resolution_change)
 
         async def handle_frame_upload(e, which: str) -> None:
             if not is_open():
@@ -533,7 +634,7 @@ def build_page() -> None:
             if seg is None:
                 ui.notify('That segment is not in the plan.', type='negative')
                 return
-            if seg.status in ('queued', 'generating'):
+            if seg.status in ('queued', 'rendering'):
                 ui.notify('This segment is already generating.', type='warning')
                 return
 
@@ -603,6 +704,16 @@ def build_page() -> None:
             state['kfs'] = plan_to_keyframes(plan)
             state['video_src'] = None
             total_duration.value = plan.total_duration
+            # Reflect the stored resolution in the dropdown. If it isn't one of
+            # the offered presets (e.g. an old custom size), snap to the default
+            # preset and normalize the plan so UI and generation stay consistent.
+            res_label = RES_BY_SIZE.get((plan.width, plan.height))
+            if res_label is None:
+                w, h = RESOLUTIONS[DEFAULT_RESOLUTION_LABEL]
+                plan.width, plan.height = w, h
+                save_plan(plan)
+                res_label = DEFAULT_RESOLUTION_LABEL
+            proj_resolution.value = res_label
             timeline.set_total_duration(plan.total_duration)
             timeline.set_keyframes(state['kfs'])
             timeline.set_segment_statuses({s.id: s.status for s in plan.segments})

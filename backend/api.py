@@ -64,8 +64,9 @@ def get_image(filename: str) -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
-# Rendered clips — written by backend/render.py as clips/<segment_id>.mp4
-# and played in the preview window once a segment's status is "done".
+# Rendered clips — content-addressed (<sha256>.mp4) files written by
+# backend/generate.py into clips/, played in the preview window once a
+# segment's status is "done".
 # ---------------------------------------------------------------------------
 @router.get("/projects/clips/{filename}")
 def get_clip(filename: str) -> FileResponse:

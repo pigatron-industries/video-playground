@@ -150,3 +150,26 @@ def save_image(filename: str, data: bytes) -> Path:
     if not dest.exists():
         dest.write_bytes(data)
     return dest
+
+
+def _sha256_hex(path: Path) -> str:
+    """Stream a file's SHA-256 in chunks so large clips never load into memory."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def save_clip(src: Path | str) -> Path:
+    """Store a rendered clip under a content-addressed name (<sha256>.mp4).
+
+    Mirrors save_image(): identical renders map to the same file (no
+    duplicate copies), and re-rendering a segment never overwrites an earlier
+    take — each distinct render simply gets its own hash-named file.
+    """
+    src = Path(src)
+    dest = project_dir() / "clips" / f"{_sha256_hex(src)}.mp4"
+    if not dest.exists():
+        shutil.copy2(src, dest)
+    return dest

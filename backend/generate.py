@@ -1,18 +1,22 @@
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
 import requests
+from PIL import Image, ImageOps
 
 from backend.models import Segment
-from backend.storage import load_plan, project_dir, save_plan
+from backend.storage import load_plan, project_dir, save_clip, save_plan
 
 # Generic workflow API (diffusers-playground) — see api.md in that repo for
 # the full contract. Overridable via env var if the server moves off localhost.
 API_BASE_URL = os.environ.get("VIDEO_API_BASE_URL", "http://localhost:8070").rstrip("/")
 H3_WORKFLOW = "MinimaxH3VideoWorkflow"
-H3_RESOLUTION = [768, 448]  # [width, height], per the docs example
+# Default generation resolution ([width, height]) — the workflow's documented
+# example. A project overrides it via RenderPlan.width/height (the Project tab).
+DEFAULT_RESOLUTION = [768, 448]
 POLL_INTERVAL_SECONDS = 2.0
 # Give up only after this many *consecutive* poll failures — transient network
 # hiccups are fine, a dead server is not (~1 minute at the interval above).
@@ -25,13 +29,23 @@ def run_generate(segment_id: str) -> None:
     sidebar may have edited the prompt/trim after this was queued."""
     plan = load_plan()
     segment = next(s for s in plan.segments if s.id == segment_id)
-    out_path = project_dir() / "clips" / f"{segment_id}.mp4"
 
     segment.status = "rendering"
     save_plan(plan)
 
     try:
-        generate_clip(segment, out_path)
+        # Render into a temp file first, then store it under its content hash
+        # (like images) so re-rendering never clobbers an earlier take.
+        with tempfile.TemporaryDirectory(prefix="clip-render-") as tmp_dir:
+            staged = Path(tmp_dir) / f"{segment_id}.mp4"
+            generate_clip(segment, staged, width=plan.width, height=plan.height)
+            out_path = save_clip(staged)
+
+        # Keep the previous take reachable instead of overwriting it.
+        prev = segment.output_path
+        if prev and prev != str(out_path):
+            segment.history = [p for p in segment.history if p != str(out_path)]
+            segment.history.insert(0, prev)
         segment.status = "done"
         segment.output_path = str(out_path)
         segment.error = None
@@ -42,48 +56,85 @@ def run_generate(segment_id: str) -> None:
     save_plan(plan)
 
 
-def generate_clip(segment: Segment, out_path: Path) -> None:
+def generate_clip(
+    segment: Segment,
+    out_path: Path,
+    *,
+    width: int = DEFAULT_RESOLUTION[0],
+    height: int = DEFAULT_RESOLUTION[1],
+) -> None:
     """Generate a clip via MinimaxH3VideoWorkflow on the generic workflow
     API: queue it asynchronously, poll until finished, then copy the
-    resulting file into the project's clips/ folder."""
-    params = {
-        "prompt": segment.prompt,
-        "first_image": _image_param(segment.start_image_path),
-        "last_image": _image_param(segment.end_image_path),
-        "resolution": H3_RESOLUTION,
-        "duration": segment.duration,
-    }
+    resulting file into the project's clips/ folder. ``width``/``height`` are
+    the project's generation resolution (RenderPlan.width/height); they default
+    to the workflow's documented example so direct callers still work. Frame
+    images are resized to that same resolution before being sent."""
+    # The resized copies live in a temp dir that must stay on disk while the
+    # API reads them, so it wraps everything up to (and including) polling.
+    with tempfile.TemporaryDirectory(prefix="frame-resize-") as tmp_dir:
+        params = {
+            "prompt": segment.prompt,
+            "first_image": _image_param(
+                segment.start_image_path, width, height, Path(tmp_dir), "first"
+            ),
+            "last_image": _image_param(
+                segment.end_image_path, width, height, Path(tmp_dir), "last"
+            ),
+            "resolution": [width, height],
+            "duration": segment.duration,
+        }
 
-    resp = requests.post(
-        f"{API_BASE_URL}/api/generic/async/run",
-        json={"workflow": H3_WORKFLOW, "batch_size": 1, "params": params},
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"Failed to queue generation: HTTP {resp.status_code}: {resp.text[:500]}"
+        resp = requests.post(
+            f"{API_BASE_URL}/api/generic/async/run",
+            json={"workflow": H3_WORKFLOW, "batch_size": 1, "params": params},
+            timeout=30,
         )
-    job = resp.json()
-    job_id = job.get("job_id")
-    if not job_id:
-        raise RuntimeError(f"No job_id in queue response: {job}")
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Failed to queue generation: HTTP {resp.status_code}: {resp.text[:500]}"
+            )
+        job = resp.json()
+        job_id = job.get("job_id")
+        if not job_id:
+            raise RuntimeError(f"No job_id in queue response: {job}")
 
-    result = _poll_job(job_id)
+        result = _poll_job(job_id)
     shutil.copy2(_extract_video_file(result), out_path)
 
 
-def _image_param(stored: str | None) -> str | None:
+def _image_param(
+    stored: str | None, width: int, height: int, tmp_dir: Path, name: str
+) -> str | None:
     """Turn a segment's stored image reference into a local file path the
-    API can read (it accepts base64 or a server-side path), or None if unset."""
+    API can read (it accepts base64 or a server-side path), resized to the
+    project's generation resolution. Returns None if unset."""
+    src = _resolve_image(stored)
+    if src is None:
+        return None
+    with Image.open(src) as img:
+        # exif_transpose bakes in any camera rotation before we resize, so
+        # the frame arrives oriented the way it was previewed.
+        resized = ImageOps.exif_transpose(img).resize((width, height))
+        dst = tmp_dir / f"{name}{src.suffix}"
+        if src.suffix.lower() in {".jpg", ".jpeg"}:
+            resized.convert("RGB").save(dst)  # JPEG has no alpha channel
+        else:
+            resized.save(dst)
+    return str(dst)
+
+
+def _resolve_image(stored: str | None) -> Path | None:
+    """Resolve a segment's stored image reference to an existing local file,
+    or None if unset/unresolvable."""
     if not stored:
         return None
     name = Path(stored).name  # handles both bare names and full/URL paths
     candidate = project_dir() / "images" / name
     if candidate.exists():
-        return str(candidate)
+        return candidate
     raw = Path(stored)
     if raw.is_absolute() and raw.exists():
-        return str(raw)
+        return raw
     return None
 
 
