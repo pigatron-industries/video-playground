@@ -218,6 +218,82 @@ def apply_segment_duplicate(
     return new_kfs, copy_seg, shifted
 
 
+def reorder_segments(plan: RenderPlan, from_idx: int, to_idx: int) -> list[dict] | None:
+    """Reorder the plan's segments by moving the one in slot ``from_idx`` into
+    slot ``to_idx`` (both 0-based positions among consecutive keyframe pairs).
+
+    Segments tile the timeline contiguously and each carries its own duration +
+    content, so reordering permutes which segment occupies each positional slot.
+    Keyframes are bare time anchors: they keep their ids and order — only their
+    times change to reflect the new durations — while segment content is
+    redistributed into the (unchanged) positional slots.
+
+    Returns the new keyframe list ``[{id, time}]`` on success, or None when the
+    move is a no-op / out of range (e.g. fewer than two segments)."""
+    kfs = sorted(plan.keyframes, key=lambda k: k.time)
+    segs = plan.segments  # positional order matching consecutive kf pairs
+    m = len(segs)
+    if m < 2 or len(kfs) != m + 1:
+        return None
+    try:
+        from_idx = int(from_idx)
+        to_idx = int(to_idx)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= from_idx < m and 0 <= to_idx < m) or from_idx == to_idx:
+        return None
+
+    def capture(s: Segment) -> dict:
+        return {
+            'prompt': s.prompt,
+            'start_image_path': s.start_image_path,
+            'end_image_path': s.end_image_path,
+            'source_clip_path': s.source_clip_path,
+            'trim_in': s.trim_in,
+            'trim_out': s.trim_out,
+            'speed_factor': s.speed_factor,
+            'status': s.status,
+            'output_path': s.output_path,
+            'history': list(s.history or []),
+            'error': s.error,
+            'duration': round(s.duration, 1) or 0.1,
+        }
+
+    units = [capture(s) for s in segs]
+    item = units.pop(from_idx)
+    units.insert(to_idx, item)
+
+    # Redistribute content into the positional slots and recompute times from
+    # the permuted durations; keyframe i+1 lands at the end of segment i. The
+    # first keyframe (and thus any leading gap before it) is left untouched.
+    base = kfs[0].time
+    t = base
+    for i, s in enumerate(segs):
+        u = units[i]
+        dur = round(u['duration'], 1) or 0.1
+        s.prompt = u['prompt']
+        s.start_image_path = u['start_image_path']
+        s.end_image_path = u['end_image_path']
+        s.source_clip_path = u['source_clip_path']
+        s.trim_in = u['trim_in']
+        s.trim_out = u['trim_out']
+        s.speed_factor = u['speed_factor']
+        s.status = u['status']
+        s.output_path = u['output_path']
+        s.history = list(u['history'])
+        s.error = u['error']
+        s.start_time = round(t, 1)
+        t = round(t + dur, 1)
+        s.end_time = t
+        s.duration = dur
+
+    new_kfs = [{'id': kfs[0].id, 'time': base}]
+    for i in range(m):
+        new_kfs.append({'id': kfs[i + 1].id, 'time': segs[i].end_time})
+    plan.keyframes = [Keyframe(id=k['id'], time=k['time']) for k in new_kfs]
+    return new_kfs
+
+
 def build_page() -> None:
     @ui.page('/')
     def index():
@@ -595,8 +671,40 @@ def build_page() -> None:
             commit()
             show_selection()  # a drag may have changed the selected time
 
+        def on_reorder(e) -> None:
+            """A segment was drag-reordered (e.args = {from, to}, slot indices)."""
+            if not is_open():
+                return
+            plan = load_plan()
+            # A queued / in-flight render reads its segment by id at run time;
+            # moving content between slots mid-render would desync it.
+            pending = set(render_queue.pending())
+            if any(
+                s.status in ('queued', 'rendering') or s.id in pending
+                for s in plan.segments
+            ):
+                ui.notify('Wait for the queued render to finish before reordering.', type='warning')
+                return
+
+            new_kfs = reorder_segments(plan, e.args['from'], e.args['to'])
+            if new_kfs is None:
+                return  # no-op (same slot / invalid) — nothing changed
+            save_plan(plan)
+            state['kfs'] = new_kfs
+
+            # Push the new layout + status/prompt maps to the widget.
+            timeline.set_keyframes(new_kfs)
+            timeline.set_segment_statuses({s.id: s.status for s in plan.segments})
+            timeline.set_segment_prompts({s.id: bool(s.prompt) for s in plan.segments})
+
+            # Select the slot it landed in so the sidebar shows its new content.
+            to_idx = int(e.args['to'])
+            if 0 <= to_idx < len(plan.segments):
+                select('segment', plan.segments[to_idx].id)
+
         timeline.on('select', on_select)
         timeline.on('change', on_change)
+        timeline.on('reorder', on_reorder)
 
         # ------------------------------------------------------------------
         # Form -> state (plain Python, no run_javascript)

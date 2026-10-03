@@ -45,6 +45,17 @@ export default {
       dragId: null,
       dragOffsetX: 0,
       dragMoved: false,
+      // Segment reorder-drag state. A segment is grabbed (segDragFrom >= 0),
+      // becomes "engaged" once the pointer moves past a small threshold (so a
+      // plain click still just selects it). dropIndex is the keyframe boundary
+      // the pointer is nearest (draws the insertion indicator); dropTo is the
+      // final slot index the segment will occupy after the move.
+      segDragFrom: -1,
+      segDragEngaged: false,
+      dropIndex: -1,
+      dropTo: -1,
+      downX: 0,
+      downY: 0,
     };
   },
 
@@ -255,13 +266,27 @@ export default {
         return;
       }
 
+      // While a reorder drag is engaged, the grabbed block renders "lifted"
+      // (faded + dashed) so it reads as picked up; the insertion indicator
+      // (drawn after this row) shows where it will land.
+      const liftedId =
+        this.segDragEngaged && this.segDragFrom >= 0 && segs[this.segDragFrom]
+          ? segs[this.segDragFrom].id
+          : null;
+
       for (const s of segs) {
         const x1 = this.timeToX(s.start) + 2;
         const w = Math.max(2, this.timeToX(s.end) - x1 - 2);
         const status = (this.segmentStatus && this.segmentStatus[s.id]) || 'empty';
         const colors = SEG_COLORS[status] || SEG_COLORS.empty;
         const selected = selKind === 'segment' && selId === s.id;
+        const lifted = s.id === liftedId;
 
+        ctx.save();
+        if (lifted) {
+          ctx.globalAlpha = 0.35;
+          ctx.setLineDash([5, 4]);
+        }
         this.roundRect(x1, SEG_TOP, w, SEG_H, 6);
         ctx.fillStyle = colors.fill;
         ctx.fill();
@@ -282,9 +307,42 @@ export default {
             ctx.fillStyle = '#c9c9d2';
             ctx.fillText((s.end - s.start).toFixed(1) + 's', cx, cy + 3);
           }
-          ctx.textAlign = 'start';
         }
+        ctx.restore(); // also restores textAlign / alpha / dash
       }
+
+      this.drawReorderIndicator();
+    },
+
+    // Vertical insertion marker at the slot boundary the dragged segment will
+    // occupy — drawn on top of the row so it's always visible.
+    drawReorderIndicator() {
+      if (!this.segDragEngaged || this.dropIndex < 0) return;
+      // A no-op drop (lands where it already is) shows no insertion line.
+      if (this.dropTo === this.segDragFrom) return;
+      const ctx = this.ctx;
+      const sorted = [...this.kfs].sort((a, b) => a.time - b.time);
+      if (this.dropIndex >= sorted.length) return;
+      const bx = this.timeToX(sorted[this.dropIndex].time);
+
+      ctx.save();
+      ctx.strokeStyle = '#5b8cff';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(bx, SEG_TOP - 8);
+      ctx.lineTo(bx, SEG_TOP + SEG_H + 8);
+      ctx.stroke();
+      // Diamond cap at the top so it reads as an insertion point.
+      const cy = SEG_TOP - 13;
+      ctx.fillStyle = '#5b8cff';
+      ctx.beginPath();
+      ctx.moveTo(bx, cy - 6);
+      ctx.lineTo(bx + 6, cy);
+      ctx.lineTo(bx, cy + 6);
+      ctx.lineTo(bx - 6, cy);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
     },
 
     // ---- events out -------------------------------------------------------
@@ -293,6 +351,12 @@ export default {
     },
     emitSelect(kind, id) {
       this.$emit('select', { kind, id });
+    },
+    // A segment was drag-reordered. `from` is the slot it left and `to` the
+    // slot it lands in (both 0-based positions among consecutive keyframe
+    // pairs). Python permutes which segment occupies each positional slot.
+    emitReorder(from, to) {
+      this.$emit('reorder', { from, to });
     },
 
     // ---- mouse handling ---------------------------------------------------
@@ -303,12 +367,27 @@ export default {
 
     onDown(e) {
       const { x, y } = this.pos(e);
+      this.downX = x;
+      this.downY = y;
       const hit = this.findKfAt(x, y);
       if (hit) {
         this.dragId = hit.id;
         this.dragOffsetX = this.timeToX(hit.time) - x;
         this.dragMoved = false;
         this.emitSelect('keyframe', hit.id);
+        return;
+      }
+      // Grabbed a video segment block — start a potential reorder drag. It only
+      // "engages" (and stops being a plain click) once the pointer actually moves.
+      const seg = this.findSegAt(x, y);
+      if (seg) {
+        const idx = this.getSegments().findIndex(s => s.id === seg.id);
+        if (idx >= 0) {
+          this.segDragFrom = idx;
+          this.segDragEngaged = false;
+          this.dropIndex = -1;
+          this.dropTo = -1;
+        }
       }
     },
 
@@ -327,13 +406,70 @@ export default {
         canvas.style.cursor = 'grabbing';
         return;
       }
-      canvas.style.cursor = (this.findKfAt(x, y) || this.findSegAt(x, y)) ? 'pointer' : 'crosshair';
+      if (this.segDragFrom >= 0) {
+        // Not yet engaged: require real movement so a plain click still selects.
+        if (!this.segDragEngaged) {
+          if (Math.hypot(x - this.downX, y - this.downY) <= 4) return;
+          this.segDragEngaged = true;
+        }
+        // Snap to the nearest keyframe boundary (there are m+1 of them, one per
+        // keyframe — including the right end). Dropping at boundary b inserts
+        // the segment before original-slot-b; a segment dragged from an earlier
+        // slot therefore lands one left. This makes "release just past itself"
+        // a no-op instead of jumping over the neighbour.
+        const sorted = [...this.kfs].sort((a, b) => a.time - b.time);
+        const n = sorted.length; // number of boundaries (m+1)
+        if (n >= 3) {            // at least two segments to reorder
+          let best = -1, bestD = Infinity;
+          for (let k = 0; k < n; k++) {
+            const d = Math.abs(this.timeToX(sorted[k].time) - x);
+            if (d < bestD) { bestD = d; best = k; }
+          }
+          this.dropIndex = best; // boundary index, for the indicator
+          const to = best - (this.segDragFrom < best ? 1 : 0);
+          this.dropTo = Math.max(0, Math.min(n - 2, to));
+        } else {
+          this.dropIndex = -1;   // a single segment has nowhere to move to
+          this.dropTo = -1;
+        }
+        this.draw(); // show the insertion indicator + lifted block
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
+      if (this.findKfAt(x, y)) canvas.style.cursor = 'pointer';
+      else if (this.findSegAt(x, y)) canvas.style.cursor = 'grab';
+      else canvas.style.cursor = 'crosshair';
     },
 
     onUp() {
       const wasDragging = this.dragId !== null;
       this.dragId = null;
       if (wasDragging && this.dragMoved) this.emitChange(); // settled
+
+      // Finish a segment reorder drag: emit only when it actually changed slot.
+      let didReorder = false;
+      if (this.segDragFrom >= 0) {
+        if (
+          this.segDragEngaged &&
+          this.dropTo >= 0 &&
+          this.dropTo !== this.segDragFrom
+        ) {
+          this.emitReorder(this.segDragFrom, this.dropTo);
+          didReorder = true;
+        }
+        this.segDragFrom = -1;
+        this.segDragEngaged = false;
+        this.dropIndex = -1;
+        this.dropTo = -1;
+        if (didReorder) {
+          // Swallow the click that follows this mouseup so it doesn't also
+          // select / add a keyframe at the drop point.
+          this.suppressNextClick = true;
+        } else {
+          this.draw(); // clear the indicator + lifted styling
+        }
+      }
+
       if (this.$refs.canvas) this.$refs.canvas.style.cursor = 'crosshair';
     },
 
@@ -341,6 +477,7 @@ export default {
       // A completed drag ends with a click on the canvas too — ignore it so
       // releasing over a segment block doesn't accidentally select it.
       if (this.dragMoved) { this.dragMoved = false; return; }
+      if (this.suppressNextClick) { this.suppressNextClick = false; return; }
 
       const { x, y } = this.pos(e);
 
