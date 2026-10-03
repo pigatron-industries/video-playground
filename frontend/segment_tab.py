@@ -25,6 +25,7 @@ class SegmentTab:
         on_copy_prev_end=None,
         on_copy_start_to_end=None,
         on_generate=None,
+        on_duplicate=None,
         on_history_select=None,
     ) -> None:
         self._on_prompt_change_cb = on_prompt_change
@@ -33,6 +34,7 @@ class SegmentTab:
         self._on_copy_prev_end_cb = on_copy_prev_end
         self._on_copy_start_to_end_cb = on_copy_start_to_end
         self._on_generate_cb = on_generate
+        self._on_duplicate_cb = on_duplicate
         self._on_history_select_cb = on_history_select
 
         with ui.column().classes('gap-2 w-full').style(
@@ -130,6 +132,11 @@ class SegmentTab:
                     self.generate_button = ui.button(
                         'Generate', icon='movie', on_click=self._on_generate
                     )
+                    # Insert a copy of this segment (prompt, frames and clip)
+                    # right after it, pushing later keyframes back to make room.
+                    self.duplicate_button = ui.button(
+                        'Duplicate', icon='content_copy', on_click=self._on_duplicate
+                    ).props('outline')
 
         # Setting ``prompt_input.value`` fires this; app.py no-ops when the value
         # already matches the segment, so loading a selection is safe.
@@ -172,6 +179,14 @@ class SegmentTab:
         if self._on_generate_cb is not None:
             result = self._on_generate_cb()
             # generate_selected_segment is async; schedule it without blocking.
+            if hasattr(result, '__await__'):
+                import asyncio
+                asyncio.ensure_future(result)
+
+    def _on_duplicate(self) -> None:
+        if self._on_duplicate_cb is not None:
+            result = self._on_duplicate_cb()
+            # duplicate_selected_segment may be a coroutine; schedule it.
             if hasattr(result, '__await__'):
                 import asyncio
                 asyncio.ensure_future(result)

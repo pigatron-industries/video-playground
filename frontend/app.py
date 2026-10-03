@@ -14,6 +14,7 @@ Page layout (three sections):
 """
 
 import asyncio
+import secrets
 import time
 from pathlib import Path
 
@@ -130,6 +131,93 @@ def merge_keyframes_into_plan(plan: RenderPlan, kfs: list[dict]) -> RenderPlan:
     return plan
 
 
+def _new_keyframe_id() -> str:
+    """A unique keyframe id. Must not contain '-' so that "kfA-kfB" segment
+    ids stay parseable (same constraint as the widget's own id generation)."""
+    return f"kf{int(time.time() * 1000):x}{secrets.token_hex(2)}"
+
+
+def duplicate_segment_keyframes(kfs: list[dict], seg_id: str) -> tuple[list[dict], str] | None:
+    """Insert a copy of segment ``seg_id`` ("a-b") immediately to its right.
+
+    A new end keyframe lands one segment length after b, and every keyframe
+    after b keeps its id but moves back by that same length to make room — so
+    the original "a-b" is untouched, the copy becomes "b-<new>", and only the
+    segment right after it ("b-c") gets a new id ("<new>-c"). Returns
+    ``(new keyframes, new keyframe id)``, or None if ``seg_id`` is not an
+    adjacent pair in ``kfs`` (e.g. a stale selection)."""
+    a_id, _, b_id = seg_id.partition('-')
+    kfs = sorted(kfs, key=lambda k: k['time'])
+    ia = next((i for i, k in enumerate(kfs) if k['id'] == a_id), None)
+    ib = next((i for i, k in enumerate(kfs) if k['id'] == b_id), None)
+    if ia is None or ib != ia + 1:
+        return None
+    dur = round(kfs[ib]['time'] - kfs[ia]['time'], 1)
+    new_id = _new_keyframe_id()
+    new_kf = {'id': new_id, 'time': round(kfs[ib]['time'] + dur, 1)}
+    shifted = [{'id': k['id'], 'time': round(k['time'] + dur, 1)} for k in kfs[ib + 1:]]
+    return kfs[: ib + 1] + [new_kf] + shifted, new_id
+
+
+def _copy_segment_content(dst: Segment, src: Segment) -> None:
+    """Mirror every content field from ``src`` onto ``dst``. Times/duration are
+    set by the keyframe merge; status/output/history are handled separately."""
+    dst.prompt = src.prompt
+    dst.start_image_path = src.start_image_path
+    dst.end_image_path = src.end_image_path
+    dst.source_clip_path = src.source_clip_path
+    dst.trim_in = src.trim_in
+    dst.trim_out = src.trim_out
+    dst.speed_factor = src.speed_factor
+
+
+def apply_segment_duplicate(
+    plan: RenderPlan, seg_id: str
+) -> tuple[list[dict], Segment, Segment | None] | None:
+    """Duplicate segment ``seg_id`` in place and rebuild the plan around it.
+
+    The copy mirrors the source (prompt, start/end frames, trim/speed, clip +
+    earlier takes); the segment that used to follow the source keeps its full
+    state but gets a new id ("b-c" -> "<new>-c"), so that is carried over too.
+    Returns ``(keyframes, copy, shifted follower or None)`` — or None if
+    ``seg_id`` isn't an adjacent keyframe pair in the plan."""
+    kfs = [{'id': k.id, 'time': k.time} for k in sorted(plan.keyframes, key=lambda k: k.time)]
+    result = duplicate_segment_keyframes(kfs, seg_id)
+    if result is None:
+        return None
+    new_kfs, new_id = result
+
+    src = next((s for s in plan.segments if s.id == seg_id), None)
+    b_id = seg_id.split('-', 1)[1]
+    nxt_old = next((s for s in plan.segments if s.id.startswith(f'{b_id}-')), None)
+    if src is None:
+        return None
+
+    merge_keyframes_into_plan(plan, new_kfs)
+
+    copy_seg = next(s for s in plan.segments if s.id == f'{b_id}-{new_id}')
+    _copy_segment_content(copy_seg, src)
+    if src.output_path:
+        # The generated clip is content-addressed — the copy references the
+        # same file and is immediately playable/previewable.
+        copy_seg.output_path = src.output_path
+        copy_seg.history = list(src.history or [])
+        copy_seg.status = 'done'
+    else:
+        copy_seg.status = 'empty'
+    copy_seg.error = None
+
+    shifted = next((s for s in plan.segments if s.id.startswith(f'{new_id}-')), None)
+    if nxt_old is not None and shifted is not None:
+        _copy_segment_content(shifted, nxt_old)
+        shifted.status = nxt_old.status
+        shifted.output_path = nxt_old.output_path
+        shifted.history = list(nxt_old.history or [])
+        shifted.error = nxt_old.error
+
+    return new_kfs, copy_seg, shifted
+
+
 def build_page() -> None:
     @ui.page('/')
     def index():
@@ -229,6 +317,7 @@ def build_page() -> None:
                                 on_copy_prev_end=lambda: copy_prev_end_frame(),
                                 on_copy_start_to_end=lambda: copy_start_to_end_frame(),
                                 on_generate=lambda: generate_selected_segment(),
+                                on_duplicate=lambda: duplicate_selected_segment(),
                                 on_history_select=lambda path: on_history_select(path),
                             )
 
@@ -656,6 +745,53 @@ def build_page() -> None:
             save_plan(load_plan())
             show_selection()
             ui.notify("Copied this segment's start frame as its end frame.", type='positive')
+
+        def duplicate_selected_segment() -> None:
+            """Duplicate the selected segment in place: a copy with its prompt,
+            start/end frames and rendered clip is inserted right after it, and
+            every later keyframe moves back by one segment length to make room."""
+            seg = current_segment()
+            if seg is None:
+                ui.notify('Select a video segment first.', type='warning')
+                return
+
+            plan = load_plan()
+            b_id = seg.id.split('-', 1)[1]
+            nxt_old = next((s for s in plan.segments if s.id.startswith(f'{b_id}-')), None)
+            # A queued/in-flight render is keyed by segment id, and the follower's
+            # id is about to change — duplicating now would orphan that job.
+            if nxt_old is not None and (
+                nxt_old.status in ('queued', 'rendering') or nxt_old.id in render_queue.pending()
+            ):
+                ui.notify(f"Wait for {nxt_old.id} to finish rendering first.", type='warning')
+                return
+
+            result = apply_segment_duplicate(plan, seg.id)
+            if result is None:
+                ui.notify('That segment no longer exists on the timeline.', type='negative')
+                return
+            new_kfs, copy_seg, _shifted = result
+
+            # The shifted tail may now run past the timeline's end — extend it
+            # rather than leaving keyframes outside the drawable range.
+            if new_kfs[-1]['time'] > total():
+                total_duration.value = round(new_kfs[-1]['time'], 1)
+            state['kfs'] = new_kfs
+            plan.total_duration = total()
+            save_plan(plan)
+
+            # Sync the canvas: fresh keyframe layout plus status/prompt maps for
+            # the rebuilt segment set (the follower's old id is gone).
+            timeline.set_keyframes(new_kfs)
+            timeline.set_segment_statuses({s.id: s.status for s in plan.segments})
+            timeline.set_segment_prompts({s.id: bool(s.prompt) for s in plan.segments})
+
+            # Select the copy so its prompt, frames and clip show up in the sidebar.
+            select('segment', copy_seg.id)
+            ui.notify(
+                f'Duplicated {seg.id} — the copy sits right after it; later keyframes moved back.',
+                type='positive',
+            )
 
         def delete_current() -> None:
             kf = current_kf()
