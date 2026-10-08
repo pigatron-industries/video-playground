@@ -218,6 +218,65 @@ def apply_segment_duplicate(
     return new_kfs, copy_seg, shifted
 
 
+def delete_segment_keyframes(kfs: list[dict], seg_id: str) -> list[dict] | None:
+    """Remove segment ``seg_id`` ("a-b") from the keyframe list.
+
+    The keyframe at the deleted segment's end (b) is dropped, and every
+    keyframe after it moves back by the deleted segment's length — so the
+    segment that followed now starts where the deleted one started, keeping
+    its own duration. Returns the new keyframe list, or None if ``seg_id`` is
+    not an adjacent pair in ``kfs`` (e.g. a stale selection)."""
+    a_id, _, b_id = seg_id.partition('-')
+    kfs = sorted(kfs, key=lambda k: k['time'])
+    ia = next((i for i, k in enumerate(kfs) if k['id'] == a_id), None)
+    ib = next((i for i, k in enumerate(kfs) if k['id'] == b_id), None)
+    if ia is None or ib != ia + 1:
+        return None
+    delta = round(kfs[ib]['time'] - kfs[ia]['time'], 1)
+    new_kfs = list(kfs[:ib])  # drop the deleted segment's end keyframe (kfs[ib])
+    for k in kfs[ib + 1:]:
+        new_kfs.append({'id': k['id'], 'time': round(k['time'] - delta, 1)})
+    return new_kfs
+
+
+def apply_segment_delete(
+    plan: RenderPlan, seg_id: str
+) -> tuple[list[dict], Segment | None] | None:
+    """Delete segment ``seg_id`` in place and rebuild the plan around it.
+
+    The keyframe at its end is removed; every later keyframe moves back by one
+    segment length so the follower starts where the deleted one started — and
+    that follower keeps its full state (prompt, frames, status, output,
+    history) under its new id ("b-c" -> "a-c"). Returns ``(keyframes, shifted
+    follower or None)`` — or None if ``seg_id`` isn't an adjacent keyframe pair
+    in the plan."""
+    kfs = [{'id': k.id, 'time': k.time} for k in sorted(plan.keyframes, key=lambda k: k.time)]
+    new_kfs = delete_segment_keyframes(kfs, seg_id)
+    if new_kfs is None:
+        return None
+
+    a_id, _, b_id = seg_id.partition('-')
+    ib = next(i for i, k in enumerate(kfs) if k['id'] == b_id)
+    follower_old = next((s for s in plan.segments if s.id.startswith(f'{b_id}-')), None)
+
+    merge_keyframes_into_plan(plan, new_kfs)
+
+    shifted = None
+    if follower_old is not None:
+        # The keyframe the follower used to start at keeps its id — it is now
+        # this segment's end point.
+        next_id = kfs[ib + 1]['id']
+        shifted = next((s for s in plan.segments if s.id == f'{a_id}-{next_id}'), None)
+        if shifted is not None:
+            _copy_segment_content(shifted, follower_old)
+            shifted.status = follower_old.status
+            shifted.output_path = follower_old.output_path
+            shifted.history = list(follower_old.history or [])
+            shifted.error = follower_old.error
+
+    return new_kfs, shifted
+
+
 def reorder_segments(plan: RenderPlan, from_idx: int, to_idx: int) -> list[dict] | None:
     """Reorder the plan's segments by moving the one in slot ``from_idx`` into
     slot ``to_idx`` (both 0-based positions among consecutive keyframe pairs).
@@ -454,6 +513,12 @@ def build_page() -> None:
                 ui.button(
                     'Duplicate', icon='content_copy',
                     on_click=lambda: duplicate_selected_segment(),
+                ).props('dense outlined dark')
+                # Delete the selected video segment — later segments move back to
+                # fill its time and its end keyframe is removed.
+                ui.button(
+                    'Delete', icon='delete',
+                    on_click=lambda: delete_selected_segment(),
                 ).props('dense outlined dark')
                 ui.space()
 
@@ -904,6 +969,55 @@ def build_page() -> None:
             select('segment', copy_seg.id)
             ui.notify(
                 f'Duplicated {seg.id} — the copy sits right after it; later keyframes moved back.',
+                type='positive',
+            )
+
+        def delete_selected_segment() -> None:
+            """Delete the selected segment: its end keyframe is removed and every
+            later keyframe moves back by one segment length, so the follower
+            starts where the deleted one started (keeping its prompt, frames
+            and clip)."""
+            seg = current_segment()
+            if seg is None:
+                ui.notify('Select a video segment first.', type='warning')
+                return
+
+            plan = load_plan()
+            b_id = seg.id.split('-', 1)[1]
+            follower_old = next((s for s in plan.segments if s.id.startswith(f'{b_id}-')), None)
+            # A queued/in-flight render is keyed by segment id — deleting the
+            # segment (or renaming its follower) would orphan that job.
+            blocked = [
+                s for s in (seg, follower_old)
+                if s is not None and (s.status in ('queued', 'rendering') or s.id in render_queue.pending())
+            ]
+            if blocked:
+                ui.notify(f"Wait for {blocked[0].id} to finish rendering first.", type='warning')
+                return
+
+            result = apply_segment_delete(plan, seg.id)
+            if result is None:
+                ui.notify('That segment no longer exists on the timeline.', type='negative')
+                return
+            new_kfs, shifted = result
+
+            state['kfs'] = new_kfs
+            state['video_src'] = None  # the deleted segment's clip (if any) is deselected
+            save_plan(plan)
+
+            # Sync the canvas: fresh keyframe layout plus status/prompt maps for
+            # the rebuilt segment set (the follower's old id is gone).
+            timeline.set_keyframes(new_kfs)
+            timeline.set_segment_statuses({s.id: s.status for s in plan.segments})
+            timeline.set_segment_prompts({s.id: bool(s.prompt) for s in plan.segments})
+
+            if shifted is not None:
+                # Select the follower now occupying the deleted segment's slot.
+                select('segment', shifted.id)
+            else:
+                select(None, None)
+            ui.notify(
+                f'Deleted {seg.id} — later segments moved back to fill its time.',
                 type='positive',
             )
 
