@@ -3,11 +3,11 @@
 // Python owns the state. Props in: totalDuration, keyframes, segmentStatus,
 // selected. Events out: 'select' ({kind, id}) and 'change' ({keyframes}).
 // Continuous mousemove while dragging stays local to the widget; only settled
-// actions (mouseup after a drag, adding a keyframe, clicking) emit events.
+// actions (mouseup after a drag, clicking) emit events. The top keyframe track
+// is inert — all interaction happens on the video segment row below it.
 
 const PPS = 40;
 const TRACK_Y = 60;
-const KF_R = 10;
 const SEG_TOP = 112;  // top of the video segment row (below the keyframe track)
 const SEG_H = 46;     // height of a segment block
 const EDGE_TOL = 10;  // grab tolerance (px) for segment-boundary edges. Tighter than the
@@ -29,7 +29,7 @@ export default {
          style="width:100%;height:100%;overflow-x:auto;overflow-y:hidden;
                 display:flex;align-items:center;background:#1a1a1e;box-sizing:border-box">
       <canvas ref="canvas"
-              style="display:block;flex-shrink:0;cursor:crosshair"
+              style="display:block;flex-shrink:0;cursor:default"
               @mousedown="onDown" @mousemove="onMove" @click="onClick"></canvas>
     </div>
   `,
@@ -126,14 +126,6 @@ export default {
       return segs;
     },
 
-    findKfAt(x, y) {
-      for (const kf of this.kfs) {
-        const kx = this.timeToX(kf.time);
-        if (Math.hypot(kx - x, TRACK_Y - y) <= KF_R + 4) return kf;
-      }
-      return null;
-    },
-
     // Nearest segment-boundary edge within EDGE_TOL of x, reported only inside the row
     // band. Every interior boundary between consecutive segments is a shared keyframe, so
     // grabbing one re-uses the existing drag mechanics verbatim; equidistant edges resolve
@@ -200,10 +192,10 @@ export default {
         ctx.fillText(t + 's', x - 8, TRACK_Y + 24);
       }
 
-      // Keyframes are no longer drawn as dots on the track — only the ruler
-      // (ticks + time labels) renders here. Keyframe positions stay fully
-      // interactive: click one to select it, click empty track to add one, or
-      // drag a segment boundary edge in the video row below.
+      // The keyframe track is inert — only the ruler (ticks + time labels)
+      // renders here and clicks on it do nothing. All interaction happens in
+      // the video row below: click a block to select it, drag a shared
+      // boundary edge to move that keyframe, or drag a block to reorder.
 
       this.drawVideoRow();
     },
@@ -235,7 +227,7 @@ export default {
         ctx.strokeRect(40, SEG_TOP, this.timeToX(this.totalDuration) - 40, SEG_H);
         ctx.restore();
         ctx.fillStyle = '#55555e';
-        ctx.fillText('Add two or more keyframes to create a video segment', 52, SEG_TOP + SEG_H / 2 + 3);
+        ctx.fillText('No video segments yet', 52, SEG_TOP + SEG_H / 2 + 3);
         return;
       }
 
@@ -350,14 +342,6 @@ export default {
       const { x, y } = this.pos(e);
       this.downX = x;
       this.downY = y;
-      const hit = this.findKfAt(x, y);
-      if (hit) {
-        this.dragId = hit.id;
-        this.dragOffsetX = this.timeToX(hit.time) - x;
-        this.dragMoved = false;
-        this.emitSelect('keyframe', hit.id);
-        return;
-      }
       // Grabbed a video segment boundary edge — that edge is a shared keyframe, so this
       // grabs it as an ordinary keyframe drag. Interior grabs below stay reorder drags.
       const bnd = this.findBoundaryKfAt(x, y);
@@ -428,10 +412,9 @@ export default {
         canvas.style.cursor = 'grabbing';
         return;
       }
-      if (this.findKfAt(x, y)) canvas.style.cursor = 'pointer';
-      else if (this.findBoundaryKfAt(x, y)) canvas.style.cursor = 'ew-resize';
+      if (this.findBoundaryKfAt(x, y)) canvas.style.cursor = 'ew-resize';
       else if (this.findSegAt(x, y)) canvas.style.cursor = 'grab';
-      else canvas.style.cursor = 'crosshair';
+      else canvas.style.cursor = 'default';
     },
 
     onUp() {
@@ -456,14 +439,14 @@ export default {
         this.dropTo = -1;
         if (didReorder) {
           // Swallow the click that follows this mouseup so it doesn't also
-          // select / add a keyframe at the drop point.
+          // select a segment at the drop point.
           this.suppressNextClick = true;
         } else {
           this.draw(); // clear the indicator + lifted styling
         }
       }
 
-      if (this.$refs.canvas) this.$refs.canvas.style.cursor = 'crosshair';
+      if (this.$refs.canvas) this.$refs.canvas.style.cursor = 'default';
     },
 
     onClick(e) {
@@ -474,25 +457,14 @@ export default {
 
       const { x, y } = this.pos(e);
 
-      const kf = this.findKfAt(x, y);
-      if (kf) return this.emitSelect('keyframe', kf.id);
+      // The keyframe track is inert — clicks outside the video segment row do
+      // nothing: no adding keyframes, no selecting, no clearing.
+      if (y < SEG_TOP || y > SEG_TOP + SEG_H) return;
 
       const seg = this.findSegAt(x, y);
       if (seg) return this.emitSelect('segment', seg.id);
 
-      if (Math.abs(y - TRACK_Y) < 20) {
-        // Unique id (no '-' so "kfA-kfB" segment ids stay parseable).
-        const id = 'kf' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-        this.kfs.push({
-          id,
-          time: Math.round(this.xToTime(x) * 10) / 10,
-        });
-        this.resize();
-        this.emitChange();
-        return this.emitSelect('keyframe', id);
-      }
-
-      // Click on empty space clears the selection.
+      // Click on empty space in the video row clears the selection.
       this.emitSelect(null, null);
     },
   },

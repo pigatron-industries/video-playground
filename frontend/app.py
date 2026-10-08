@@ -425,7 +425,7 @@ def build_page() -> None:
 
                     # Shared hint shown above the editor panels when nothing is selected.
                     no_selection_label = ui.label(
-                        'Click a keyframe or a video segment in the timeline.'
+                        'Click a video segment in the timeline.'
                     ).classes('text-caption text-grey w-full').style('padding: 8px 10px')
 
                     with ui.tab_panels(left_tabs, value=keyframe_tab).style(
