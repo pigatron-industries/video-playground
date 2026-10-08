@@ -449,6 +449,12 @@ def build_page() -> None:
                 total_duration = ui.number('Total length (s)', value=60, min=1).props(
                     'dense outlined dark'
                 ).classes('w-32')
+                # Duplicate the selected video segment right after it — same operation as
+                # the Segment tab's button, reachable without leaving the timeline.
+                ui.button(
+                    'Duplicate', icon='content_copy',
+                    on_click=lambda: duplicate_selected_segment(),
+                ).props('dense outlined dark')
                 ui.space()
 
             # ---- bottom: the timeline widget -----------------------------

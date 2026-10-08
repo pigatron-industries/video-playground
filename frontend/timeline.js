@@ -10,6 +10,9 @@ const TRACK_Y = 60;
 const KF_R = 10;
 const SEG_TOP = 112;  // top of the video segment row (below the keyframe track)
 const SEG_H = 46;     // height of a segment block
+const EDGE_TOL = 10;  // grab tolerance (px) for segment-boundary edges. Tighter than the
+                      // keyframe dot's, since those targets are invisible and their grab
+                      // zones must not swallow neighbouring block interiors.
 
 // Render status -> block colors. Status lives on the *segment*, not the keyframe.
 const SEG_COLORS = {
@@ -143,6 +146,21 @@ export default {
         if (Math.hypot(kx - x, TRACK_Y - y) <= KF_R + 4) return kf;
       }
       return null;
+    },
+
+    // Nearest segment-boundary edge within EDGE_TOL of x, reported only inside the row
+    // band. Every interior boundary between consecutive segments is a shared keyframe, so
+    // grabbing one re-uses the existing drag mechanics verbatim; equidistant edges resolve
+    // to the earlier keyframe (timeline-sorted iteration order).
+    findBoundaryKfAt(x, y) {
+      if (y < SEG_TOP || y > SEG_TOP + SEG_H) return null;
+      const sorted = [...this.kfs].sort((a, b) => a.time - b.time);
+      let best = null, bestD = Infinity;
+      for (const kf of sorted) {
+        const d = Math.abs(this.timeToX(kf.time) - x);
+        if (d < bestD && d <= EDGE_TOL) { best = kf; bestD = d; }
+      }
+      return best;
     },
 
     findSegAt(x, y) {
@@ -377,6 +395,17 @@ export default {
         this.emitSelect('keyframe', hit.id);
         return;
       }
+      // Grabbed a video segment boundary edge — that edge is a shared keyframe, so this
+      // grabs it as an ordinary keyframe drag. Interior grabs below stay reorder drags.
+      const bnd = this.findBoundaryKfAt(x, y);
+      if (bnd) {
+        this.dragId = bnd.id;
+        this.dragOffsetX = this.timeToX(bnd.time) - x;
+        this.dragMoved = false;
+        this.emitSelect('keyframe', bnd.id);
+        return;
+      }
+
       // Grabbed a video segment block — start a potential reorder drag. It only
       // "engages" (and stops being a plain click) once the pointer actually moves.
       const seg = this.findSegAt(x, y);
@@ -437,6 +466,7 @@ export default {
         return;
       }
       if (this.findKfAt(x, y)) canvas.style.cursor = 'pointer';
+      else if (this.findBoundaryKfAt(x, y)) canvas.style.cursor = 'ew-resize';
       else if (this.findSegAt(x, y)) canvas.style.cursor = 'grab';
       else canvas.style.cursor = 'crosshair';
     },
