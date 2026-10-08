@@ -126,20 +126,6 @@ export default {
       return segs;
     },
 
-    // Which keyframe ids are the *ending* keyframe of a segment that has a
-    // prompt. Segment ids are "kfA-kfB", so the last dash-delimited part is
-    // the ending keyframe (keyframe ids themselves never contain '-').
-    getPromptedEndingKfIds() {
-      const ids = new Set();
-      const sp = this.segmentPrompts || {};
-      for (const segId in sp) {
-        if (!sp[segId]) continue;
-        const parts = segId.split('-');
-        if (parts.length >= 2) ids.add(parts[parts.length - 1]);
-      }
-      return ids;
-    },
-
     findKfAt(x, y) {
       for (const kf of this.kfs) {
         const kx = this.timeToX(kf.time);
@@ -192,9 +178,6 @@ export default {
       const canvas = this.$refs.canvas;
       if (!ctx || !canvas) return;
 
-      const selKind = this.selected ? this.selected.kind : null;
-      const selId = this.selected ? this.selected.id : null;
-
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // Keyframe track + tick marks.
@@ -217,38 +200,10 @@ export default {
         ctx.fillText(t + 's', x - 8, TRACK_Y + 24);
       }
 
-      // Connecting lines between consecutive keyframes.
-      const sorted = [...this.kfs].sort((a, b) => a.time - b.time);
-      ctx.strokeStyle = '#5b8cff55';
-      ctx.lineWidth = 4;
-      for (let i = 0; i < sorted.length - 1; i++) {
-        ctx.beginPath();
-        ctx.moveTo(this.timeToX(sorted[i].time), TRACK_Y);
-        ctx.lineTo(this.timeToX(sorted[i + 1].time), TRACK_Y);
-        ctx.stroke();
-      }
-
-      // Keyframe dots. Keyframes are bare time markers (no image of their
-      // own); the small blue dot marks that the segment *ending* here has a
-      // transition prompt set (prompt is a segment property).
-      const prompted = this.getPromptedEndingKfIds();
-      this.kfs.forEach(kf => {
-        const x = this.timeToX(kf.time);
-        const isSel = selKind === 'keyframe' && selId === kf.id;
-        ctx.beginPath();
-        ctx.arc(x, TRACK_Y, KF_R, 0, Math.PI * 2);
-        ctx.fillStyle = isSel ? '#5b8cff' : '#c9c9d2';
-        ctx.fill();
-        ctx.strokeStyle = '#1a1a1e';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        if (prompted.has(kf.id)) {
-          ctx.fillStyle = '#5b8cff';
-          ctx.beginPath();
-          ctx.arc(x, TRACK_Y - 18, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      });
+      // Keyframes are no longer drawn as dots on the track — only the ruler
+      // (ticks + time labels) renders here. Keyframe positions stay fully
+      // interactive: click one to select it, click empty track to add one, or
+      // drag a segment boundary edge in the video row below.
 
       this.drawVideoRow();
     },
@@ -325,6 +280,14 @@ export default {
             ctx.fillStyle = '#c9c9d2';
             ctx.fillText((s.end - s.start).toFixed(1) + 's', cx, cy + 3);
           }
+        }
+
+        // Small blue corner dot: this segment has a transition prompt set.
+        if (w >= 16 && this.segmentPrompts && this.segmentPrompts[s.id]) {
+          ctx.fillStyle = '#5b8cff';
+          ctx.beginPath();
+          ctx.arc(x1 + w - 8, SEG_TOP + 8, 3, 0, Math.PI * 2);
+          ctx.fill();
         }
         ctx.restore(); // also restores textAlign / alpha / dash
       }
