@@ -56,6 +56,9 @@ RESOLUTIONS = {
 DEFAULT_RESOLUTION_LABEL = 'Landscape · 768 × 448'
 RES_BY_SIZE = {(w, h): label for label, (w, h) in RESOLUTIONS.items()}
 
+# Default length (seconds) of a segment added via the timeline's Insert button.
+INSERT_SEGMENT_LENGTH = 5.0
+
 
 # ---------------------------------------------------------------------------
 # Plan <-> widget conversion (pure functions)
@@ -216,6 +219,50 @@ def apply_segment_duplicate(
         shifted.error = nxt_old.error
 
     return new_kfs, copy_seg, shifted
+
+
+def insert_segment_keyframes(
+    kfs: list[dict], seg_id: str | None = None, length: float = INSERT_SEGMENT_LENGTH
+) -> tuple[list[dict], str] | None:
+    """Insert a new segment of ``length`` seconds into the keyframe list.
+
+    If ``seg_id`` ("a-b") is given, the new block lands immediately before it:
+    a fresh keyframe takes the selected segment's start point and every keyframe
+    from there on moves back by ``length`` — so the new segment sits between the
+    previous one and the selected one, which keeps its own duration. If
+    ``seg_id`` is None, the new block is appended at the end of the timeline; an
+    empty list bootstraps to two keyframes at 0 and ``length``.
+
+    Returns ``(new keyframe list, new segment id)`` — or None if ``seg_id`` is
+    not an adjacent pair in ``kfs`` (e.g. a stale selection)."""
+    length = round(length, 1)
+    kfs = sorted(kfs, key=lambda k: k['time'])
+
+    if seg_id is not None:
+        a_id, _, b_id = seg_id.partition('-')
+        ia = next((i for i, k in enumerate(kfs) if k['id'] == a_id), None)
+        ib = next((i for i, k in enumerate(kfs) if k['id'] == b_id), None)
+        if ia is None or ib != ia + 1:
+            return None
+        new_id = _new_keyframe_id()
+        new_kf = {'id': new_id, 'time': round(kfs[ia]['time'], 1)}
+        shifted = [{'id': k['id'], 'time': round(k['time'] + length, 1)} for k in kfs[ia:]]
+        return kfs[:ia] + [new_kf] + shifted, f'{new_id}-{a_id}'
+
+    if len(kfs) == 0:
+        first_id = _new_keyframe_id()
+        second_id = _new_keyframe_id()
+        return (
+            [{'id': first_id, 'time': 0.0}, {'id': second_id, 'time': length}],
+            f'{first_id}-{second_id}',
+        )
+
+    new_id = _new_keyframe_id()
+    last_id = kfs[-1]['id']
+    return (
+        kfs + [{'id': new_id, 'time': round(kfs[-1]['time'] + length, 1)}],
+        f'{last_id}-{new_id}',
+    )
 
 
 def delete_segment_keyframes(kfs: list[dict], seg_id: str) -> list[dict] | None:
@@ -513,6 +560,12 @@ def build_page() -> None:
                 ui.button(
                     'Duplicate', icon='content_copy',
                     on_click=lambda: duplicate_selected_segment(),
+                ).props('dense outlined dark')
+                # Insert a fresh 5s segment before the selected one, or at the end
+                # of the timeline when nothing is selected.
+                ui.button(
+                    'Insert', icon='add',
+                    on_click=lambda: insert_segment(),
                 ).props('dense outlined dark')
                 # Delete the selected video segment — later segments move back to
                 # fill its time and its end keyframe is removed.
@@ -971,6 +1024,57 @@ def build_page() -> None:
                 f'Duplicated {seg.id} — the copy sits right after it; later keyframes moved back.',
                 type='positive',
             )
+
+        def insert_segment() -> None:
+            """Insert a fresh segment (default 5s) before the selected one, or at
+            the end of the timeline when nothing is selected; later keyframes
+            move back to make room and the new block is selected in the sidebar."""
+            seg = current_segment()
+            if seg is None and not is_open():
+                ui.notify('Open a project folder first.', type='warning')
+                return
+
+            plan = load_plan()
+            target_id = seg.id if seg is not None else None
+
+            # Inserting before a selection re-ids the segment that precedes it —
+            # a queued/in-flight render keyed by the old id would be orphaned.
+            if seg is not None:
+                a_id = seg.id.split('-', 1)[0]
+                preceding = next(
+                    (s for s in plan.segments if s.id.split('-', 1)[1] == a_id), None
+                )
+                if preceding is not None and (
+                    preceding.status in ('queued', 'rendering')
+                    or preceding.id in render_queue.pending()
+                ):
+                    ui.notify(f"Wait for {preceding.id} to finish rendering first.", type='warning')
+                    return
+
+            result = insert_segment_keyframes(state['kfs'], target_id)
+            if result is None:
+                ui.notify('That segment no longer exists on the timeline.', type='negative')
+                return
+            new_kfs, new_seg_id = result
+
+            # The appended tail may run past the timeline's end — extend it.
+            if new_kfs[-1]['time'] > total():
+                total_duration.value = round(new_kfs[-1]['time'], 1)
+            state['kfs'] = new_kfs
+            commit()
+
+            plan = load_plan()
+            timeline.set_keyframes(new_kfs)
+            timeline.set_segment_statuses({s.id: s.status for s in plan.segments})
+
+            select('segment', new_seg_id)
+            if seg is not None:
+                ui.notify(
+                    f'Inserted a {INSERT_SEGMENT_LENGTH:.0f}s segment before {seg.id}.',
+                    type='positive',
+                )
+            else:
+                ui.notify(f'Added a {INSERT_SEGMENT_LENGTH:.0f}s segment at the end.', type='positive')
 
         def delete_selected_segment() -> None:
             """Delete the selected segment: its end keyframe is removed and every
