@@ -437,8 +437,6 @@ def build_page() -> None:
                 return
             save_plan(plan)
             push_timeline(plan)
-            # Only refresh the label — resetting the input mid-typing would fight the user.
-            segment_widget.set_range_text(range_text_for(seg))
             # Keep the preview's playback cap in sync with the new duration.
             preview_widget.set_end(seg.duration_seconds)
 

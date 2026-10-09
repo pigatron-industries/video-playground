@@ -46,9 +46,8 @@ class SegmentTab:
             # selected (the "nothing selected" hint takes its place).
             with ui.column().classes('w-full gap-2') as self.panel:
                 self.panel.visible = False
-                self.range_label = ui.label('').classes('text-subtitle2')
                 self.duration_input = ui.number(
-                    'Duration (s)', value=5, min=0.5, step=0.5, format='%.1f'
+                    'Duration (s)', value=5, min=0.1, step=0.1, format='%.1f'
                 ).props('dense outlined debounce=500').classes('w-32')
 
                 with ui.row().classes('w-full gap-3 items-start'):
@@ -214,14 +213,12 @@ class SegmentTab:
     def set_segment(self, view: dict) -> None:
         """Show the panel and populate it from a plain ``view`` dict.
 
-        Expected keys (all optional): ``range_text``, ``prompt``,
+        Expected keys (all optional): ``prompt``,
         ``start_image_url``, ``end_image_url``, ``status_text``,
         ``generate_busy``, ``history_options`` ({path: label}),
         ``show_start_copy``, ``show_end_copy``, ``duration``.
         """
         self.panel.visible = True
-        if view.get('range_text'):
-            self.range_label.text = view['range_text']
 
         if view.get('duration') is not None:
             self.duration_input.value = view['duration']
@@ -250,9 +247,6 @@ class SegmentTab:
 
     def set_status_text(self, text: str) -> None:
         self.status_label.text = text
-
-    def set_range_text(self, text: str) -> None:
-        self.range_label.text = text
 
     def update_generate_button(self, busy: bool) -> None:
         """Disable Generate while the segment is queued or rendering."""
