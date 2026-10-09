@@ -30,7 +30,6 @@ from backend.storage import (
     save_plan,
     set_active_folder,
 )
-from frontend.keyframe_tab import KeyframeTab
 from frontend.media_tab import MediaTab
 from frontend.preview_tab import PreviewTab
 from frontend.project_tab import ProjectTab
@@ -478,16 +477,6 @@ def build_page() -> None:
                     with ui.tab_panels(left_tabs, value=keyframe_tab).style(
                         'flex: 1 1 auto; min-height: 0'
                     ).classes('w-full'):
-                        # ---- Keyframe tab --------------------------------
-                        # A standalone widget (frontend/keyframe_tab.py) — edits the
-                        # selected keyframe's time and deletes it. The prompt and frame
-                        # images belong to the segment, not here.
-                        with ui.tab_panel(keyframe_tab):
-                            keyframe_widget = KeyframeTab(
-                                on_time_change=lambda value: on_kf_time_change(value),
-                                on_delete=lambda: delete_current(),
-                            )
-
                         # ---- Segment tab ---------------------------------
                         # A standalone widget (frontend/segment_tab.py) — the unit of work:
                         # transition prompt, start/end frame images, render status + history.
@@ -637,7 +626,6 @@ def build_page() -> None:
                 segment_tab.visible = False
                 left_tabs.set_value(keyframe_tab)
                 segment_widget.hide()
-                keyframe_widget.set_keyframe(kf['time'])
                 no_selection_label.visible = False
                 # Keyframes carry no image; nothing to preview yet.
                 preview_widget.clear('Select a video segment to preview its rendered clip here.')
@@ -650,7 +638,6 @@ def build_page() -> None:
                     keyframe_tab.visible = False
                     segment_tab.visible = True
                     left_tabs.set_value(segment_tab)
-                    keyframe_widget.hide()
                     no_selection_label.visible = False
 
                     a_id, b_id = id_.split('-', 1)
@@ -706,7 +693,6 @@ def build_page() -> None:
             keyframe_tab.visible = False
             segment_tab.visible = False
             left_tabs.set_value(project_tab)
-            keyframe_widget.hide()
             segment_widget.hide()
             no_selection_label.visible = True
             preview_widget.clear('Click a keyframe or a video segment in the timeline.')
