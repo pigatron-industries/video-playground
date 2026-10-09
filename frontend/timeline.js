@@ -344,12 +344,13 @@ export default {
       this.downY = y;
       // Grabbed a video segment boundary edge — that edge is a shared keyframe, so this
       // grabs it as an ordinary keyframe drag. Interior grabs below stay reorder drags.
+      // Grabbing the handle must not change what's selected: keep the current video
+      // segment selection (no keyframe form) and just start resizing it.
       const bnd = this.findBoundaryKfAt(x, y);
       if (bnd) {
         this.dragId = bnd.id;
         this.dragOffsetX = this.timeToX(bnd.time) - x;
         this.dragMoved = false;
-        this.emitSelect('keyframe', bnd.id);
         return;
       }
 
