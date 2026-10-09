@@ -1,15 +1,12 @@
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from backend.models import OpenProjectRequest, RenderPlan, Segment, SelectionState
+from backend.models import OpenProjectRequest, RenderPlan, Segment
 from backend.queue import render_queue
 from backend.render import concat_segments
 from backend.storage import active_folder, load_plan, project_dir, save_image, save_plan, set_active_folder
 
 router = APIRouter()
-
-# In-memory, single-user selection state — see SelectionState's docstring.
-_selection = SelectionState()
 
 
 # ---------------------------------------------------------------------------
@@ -109,26 +106,6 @@ def concat_project() -> dict:
         raise HTTPException(400, f"Segments not yet rendered: {missing}")
     final_path = concat_segments(plan)
     return {"output_path": str(final_path)}
-
-
-# ---------------------------------------------------------------------------
-# Selection state — bridges the canvas (JS) and the NiceGUI sidebar (Python).
-#
-# The canvas POSTs here whenever the user clicks/drags a keyframe. The
-# NiceGUI page polls GET on a short timer and refreshes its form fields
-# from whatever comes back. This keeps the bridge simple and version-
-# independent rather than relying on NiceGUI's internal event plumbing.
-# ---------------------------------------------------------------------------
-@router.post("/ui/select")
-def set_selection(state: SelectionState) -> SelectionState:
-    global _selection
-    _selection = state
-    return _selection
-
-
-@router.get("/ui/select")
-def get_selection() -> SelectionState:
-    return _selection
 
 
 @router.get("/health")

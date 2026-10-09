@@ -27,6 +27,7 @@ class SegmentTab:
         on_generate=None,
         on_duplicate=None,
         on_history_select=None,
+        on_duration_change=None,
     ) -> None:
         self._on_prompt_change_cb = on_prompt_change
         self._on_frame_upload_cb = on_frame_upload
@@ -36,6 +37,7 @@ class SegmentTab:
         self._on_generate_cb = on_generate
         self._on_duplicate_cb = on_duplicate
         self._on_history_select_cb = on_history_select
+        self._on_duration_change_cb = on_duration_change
 
         with ui.column().classes('gap-2 w-full').style(
             'height: 100%; overflow-y: auto; padding: 10px'
@@ -45,6 +47,9 @@ class SegmentTab:
             with ui.column().classes('w-full gap-2') as self.panel:
                 self.panel.visible = False
                 self.range_label = ui.label('').classes('text-subtitle2')
+                self.duration_input = ui.number(
+                    'Duration (s)', value=5, min=0.5, step=0.5, format='%.1f'
+                ).props('dense outlined debounce=500').classes('w-32')
 
                 with ui.row().classes('w-full gap-3 items-start'):
                     # ---- start frame column ------------------------------
@@ -143,6 +148,7 @@ class SegmentTab:
         self.prompt_input.on_value_change(self._emit_prompt_change)
         # Setting ``history_select.value`` fires this (app.py guards on selection).
         self.history_select.on_value_change(self._emit_history_select)
+        self.duration_input.on_value_change(self._emit_duration_change)
 
     # -- internal emitters ------------------------------------------------
     def _emit_prompt_change(self, e) -> None:
@@ -195,6 +201,10 @@ class SegmentTab:
         if self._on_history_select_cb is not None and e.value:
             self._on_history_select_cb(e.value)
 
+    def _emit_duration_change(self, e) -> None:
+        if self._on_duration_change_cb is not None and e.value is not None:
+            self._on_duration_change_cb(e.value)
+
     # -- public API -------------------------------------------------------
     @staticmethod
     def _set_thumb(img, url: str | None) -> None:
@@ -207,11 +217,14 @@ class SegmentTab:
         Expected keys (all optional): ``range_text``, ``prompt``,
         ``start_image_url``, ``end_image_url``, ``status_text``,
         ``generate_busy``, ``history_options`` ({path: label}),
-        ``show_start_copy``, ``show_end_copy``.
+        ``show_start_copy``, ``show_end_copy``, ``duration``.
         """
         self.panel.visible = True
         if view.get('range_text'):
             self.range_label.text = view['range_text']
+
+        if view.get('duration') is not None:
+            self.duration_input.value = view['duration']
 
         # Setting this fires on_value_change; app.py no-ops when unchanged.
         self.prompt_input.value = view.get('prompt') or ''
@@ -237,6 +250,9 @@ class SegmentTab:
 
     def set_status_text(self, text: str) -> None:
         self.status_label.text = text
+
+    def set_range_text(self, text: str) -> None:
+        self.range_label.text = text
 
     def update_generate_button(self, busy: bool) -> None:
         """Disable Generate while the segment is queued or rendering."""
