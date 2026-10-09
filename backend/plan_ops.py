@@ -6,10 +6,18 @@ the caller needs for UI follow-up (or None/False when the request was invalid,
 e.g. a stale selection). Persisting and refreshing the UI is the caller's job.
 """
 
-from backend.models import RenderPlan, Segment, new_segment_id
+from backend.models import DEFAULT_FPS, RenderPlan, Segment, new_segment_id
 
+# User-facing length limits in *seconds* (the unit the UI and this module's
+# public API speak). Values are stored as integer frames at a segment's own fps.
 MIN_DURATION = 0.5
 DEFAULT_DURATION = 5.0
+
+
+def _seconds_to_frames(seconds: float, fps: float) -> int:
+    """Clamp to MIN_DURATION seconds and convert to an integer frame count."""
+    clamped = max(MIN_DURATION, float(seconds))
+    return max(1, int(round(clamped * fps)))
 
 
 def add_segment(
@@ -24,7 +32,8 @@ def add_segment(
         idx = plan.index_of(before_id)
         if idx is None:
             return None
-    seg = Segment(duration=round(max(duration, MIN_DURATION), 1))
+    # New segments have no rendered clip yet, so they use the default frame rate.
+    seg = Segment(duration_frames=_seconds_to_frames(duration, DEFAULT_FPS))
     if idx > 0:
         seg.start_image_path = plan.segments[idx - 1].end_image_path
     plan.segments.insert(idx, seg)
@@ -65,13 +74,14 @@ def move_segment(plan: RenderPlan, from_idx: int, to_idx: int) -> bool:
 
 
 def resize_segment(plan: RenderPlan, seg_id: str, duration: float) -> bool:
-    """Set a segment's duration (clamped, rounded to 0.1s). Later segments
-    shift automatically. Returns False when nothing changed."""
+    """Set a segment's length. ``duration`` is in seconds (the user-facing unit);
+    it's stored as an integer frame count at the segment's own frame rate. Later
+    segments shift automatically. Returns False when nothing changed."""
     seg = plan.get(seg_id)
     if seg is None:
         return False
-    new = round(max(MIN_DURATION, float(duration)), 1)
-    if new == seg.duration:
+    new_frames = _seconds_to_frames(duration, seg.fps)
+    if new_frames == seg.duration_frames:
         return False
-    seg.duration = new
+    seg.duration_frames = new_frames
     return True

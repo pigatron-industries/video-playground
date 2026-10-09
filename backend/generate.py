@@ -8,6 +8,7 @@ import requests
 from PIL import Image, ImageOps
 
 from backend.models import Segment
+from backend.render import detect_fps
 from backend.storage import load_plan, project_dir, save_clip, save_plan
 
 # Generic workflow API (diffusers-playground) — see api.md in that repo for
@@ -40,6 +41,15 @@ def run_generate(segment_id: str) -> None:
             staged = Path(tmp_dir) / f"{segment_id}.mp4"
             generate_clip(segment, staged, width=plan.width, height=plan.height)
             out_path = save_clip(staged)
+
+        # Detect the rendered clip's real frame rate and store it on the segment.
+        # Re-express the stored duration (frames) at that rate so the timeline
+        # length in seconds is unchanged — only the underlying fps/frames update.
+        detected_fps = detect_fps(out_path)
+        if detected_fps:
+            intended_seconds = segment.duration_frames / segment.fps  # preserve real time
+            segment.fps = detected_fps
+            segment.duration_frames = int(round(intended_seconds * detected_fps))
 
         # Keep the previous take reachable instead of overwriting it.
         prev = segment.output_path
@@ -81,7 +91,9 @@ def generate_clip(
                 segment.end_image_path, width, height, Path(tmp_dir), "last"
             ),
             "resolution": [width, height],
-            "duration": segment.duration,
+            # The workflow API takes a length in seconds; the stored duration is
+            # an integer frame count, so convert at this boundary.
+            "duration": round(segment.duration_seconds, 2),
         }
 
         resp = requests.post(

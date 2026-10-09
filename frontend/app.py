@@ -79,8 +79,12 @@ def _image_url(name: str | None) -> str | None:
 
 
 def segments_payload(plan: RenderPlan) -> list[dict]:
-    """RenderPlan -> the timeline widget's segment format."""
-    return [{'id': s.id, 'duration': s.duration} for s in plan.segments]
+    """RenderPlan -> the timeline widget's segment format.
+
+    Durations are sent as *seconds* (converted from each segment's stored frame
+    count at its own fps): the canvas lays blocks out in pixels-per-second, so
+    it needs seconds to get block widths right."""
+    return [{'id': s.id, 'duration': s.duration_seconds} for s in plan.segments]
 
 
 def build_page() -> None:
@@ -248,7 +252,7 @@ def build_page() -> None:
             span = load_plan().span_of(seg.id)
             if span is None:
                 return ''
-            return f'{span[0]:.1f}s → {span[1]:.1f}s · {seg.duration:.1f}s'
+            return f'{span[0]:.1f}s → {span[1]:.1f}s · {seg.duration_seconds:.1f}s'
 
         def push_timeline(plan: RenderPlan) -> None:
             """Python-initiated change: send the whole layout to the widget."""
@@ -296,7 +300,7 @@ def build_page() -> None:
             err = f' — {seg.error}' if seg.error else ''
             segment_widget.set_segment({
                 'range_text': range_text_for(seg),
-                'duration': seg.duration,
+                'duration': seg.duration_seconds,
                 'prompt': seg.prompt or '',
                 'start_image_url': _image_url(_image_name(seg.start_image_path)),
                 'end_image_url': _image_url(_image_name(seg.end_image_path)),
@@ -321,6 +325,8 @@ def build_page() -> None:
                 if state['video_src'] != src:
                     state['video_src'] = src
                     preview_widget.show_clip(src, 'Rendered clip — press play to watch.')
+                # Cap playback at the segment's duration (the rendered clip may be longer).
+                preview_widget.set_end(seg.duration_seconds)
             else:
                 state['video_src'] = None
                 preview_widget.clear('No rendered clip yet — render the segment to preview video here.')
@@ -433,6 +439,8 @@ def build_page() -> None:
             push_timeline(plan)
             # Only refresh the label — resetting the input mid-typing would fight the user.
             segment_widget.set_range_text(range_text_for(seg))
+            # Keep the preview's playback cap in sync with the new duration.
+            preview_widget.set_end(seg.duration_seconds)
 
         def on_seg_prompt_change(value) -> None:
             seg = current_segment()
@@ -447,9 +455,12 @@ def build_page() -> None:
             """Preview an earlier take of the selected segment."""
             if not path or state['sel_id'] is None:
                 return
+            seg = current_segment()
             url = f'/api/projects/clips/{Path(path).name}'
             state['video_src'] = url
             preview_widget.show_clip(url, 'Showing an earlier render — re-select the segment for the latest.')
+            if seg is not None:
+                preview_widget.set_end(seg.duration_seconds)
 
         def on_resolution_change(value) -> None:
             """Persist the project's generation resolution (Project tab)."""

@@ -59,6 +59,27 @@ class PreviewTab:
             f'if(v)v.loop={val};}})();'
         )
 
+    def set_end(self, end: float | None) -> None:
+        """Stop (or loop) playback at ``end`` seconds without touching the file."""
+        if self._video_el is None:
+            return
+        val = 'null' if end is None else f'{end:.3f}'
+        ui.run_javascript(f'''(function(){{
+      var c=document.querySelector(".{self._VIDEO_CLASS}");
+      var v=c&&(c.tagName==="VIDEO"?c:c.querySelector("video"));
+      if(!v) return;
+      v._end={val};
+      if(v._limitBound) return;
+      v._limitBound=true;
+      (function tick(){{
+        if(v._end!=null && v.currentTime>=v._end){{
+          if(v.loop){{ v.currentTime=0; v.play(); }}
+          else {{ v.pause(); v.currentTime=v._end; }}
+        }}
+        requestAnimationFrame(tick);
+      }})();
+    }})();''')
+
     def show_clip(self, src: str, message: str) -> None:
         """Replace the preview with a freshly-loaded video at ``src``.
 
