@@ -17,6 +17,7 @@ const MIN_VISIBLE = 30;   // the ruler always spans at least this many seconds
 const TAIL_PAD = 20;      // empty room after the last segment (seconds)
 
 const round1 = v => Math.round(v * 10) / 10;
+const round3 = v => Math.round(v * 1000) / 1000;
 
 const SEG_COLORS = {
   empty:     { fill: 'rgba(91,140,255,0.10)', stroke: 'rgba(91,140,255,0.45)', text: '#8b8b95' },
@@ -108,7 +109,7 @@ export default {
       let t = 0;
       return this.segs.map(s => {
         const start = t;
-        t = round1(t + s.duration);
+        t = round3(t + s.duration);
         return { id: s.id, start, end: t };
       });
     },

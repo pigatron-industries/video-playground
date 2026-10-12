@@ -301,6 +301,7 @@ def build_page() -> None:
             segment_widget.set_segment({
                 'range_text': range_text_for(seg),
                 'duration': seg.duration_seconds,
+                'fps': seg.fps,
                 'prompt': seg.prompt or '',
                 'start_image_url': _image_url(_image_name(seg.start_image_path)),
                 'end_image_url': _image_url(_image_name(seg.end_image_path)),
@@ -433,12 +434,12 @@ def build_page() -> None:
             if seg is None or value is None:
                 return
             plan = load_plan()
-            if not resize_segment(plan, seg.id, float(value)):
-                return
-            save_plan(plan)
-            push_timeline(plan)
-            # Keep the preview's playback cap in sync with the new duration.
-            preview_widget.set_end(seg.duration_seconds)
+            if resize_segment(plan, seg.id, float(value)):
+                save_plan(plan)
+                push_timeline(plan)
+                preview_widget.set_end(seg.duration_seconds)
+            # Show the frame-snapped value (also covers clamping to MIN_DURATION).
+            segment_widget.set_duration(seg.duration_seconds)
 
         def on_seg_prompt_change(value) -> None:
             seg = current_segment()

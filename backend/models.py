@@ -84,7 +84,7 @@ class RenderPlan(BaseModel):
         """(start, end) in seconds of a segment, or None if it isn't in the plan."""
         t = 0.0
         for s in self.segments:
-            end = round(t + s.duration_seconds, 1)
+            end = round(t + s.duration_seconds, 3)
             if s.id == seg_id:
                 return t, end
             t = end

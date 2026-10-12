@@ -38,6 +38,7 @@ class SegmentTab:
         self._on_duplicate_cb = on_duplicate
         self._on_history_select_cb = on_history_select
         self._on_duration_change_cb = on_duration_change
+        self._fps = 24.0
 
         with ui.column().classes('gap-2 w-full').style(
             'height: 100%; overflow-y: auto; padding: 10px'
@@ -46,92 +47,109 @@ class SegmentTab:
             # selected (the "nothing selected" hint takes its place).
             with ui.column().classes('w-full gap-2') as self.panel:
                 self.panel.visible = False
-                self.duration_input = ui.number(
-                    'Duration (s)', value=5, min=0.1, step=0.1, format='%.1f'
-                ).props('dense outlined debounce=500').classes('w-32')
 
-                with ui.row().classes('w-full gap-3 items-start'):
-                    # ---- start frame column ------------------------------
-                    with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                        # Relative wrapper so the corner buttons can sit on the
-                        # thumbnail; min-height keeps them anchored even before a
-                        # start frame exists (the image is hidden).
-                        with ui.element('div').style(
-                            'position: relative; width: 100%; min-height: 140px'
-                        ):
-                            self.start_thumb = ui.image().style(
-                                'width: 100%; height: 140px; '
-                                'background:#1a1a1e; border: 1px solid #34343c'
-                            ).props('fit=contain')
-                            self.start_thumb.visible = False
-                            self.start_delete = ui.button(
-                                icon='close',
-                                on_click=lambda: self._emit_remove_frame('start'),
-                            ).props('flat dense round color=white size=sm').style(
-                                'position: absolute; top: 4px; right: 4px;'
-                            )
-                            self.start_delete.visible = False
-                            # Top-left corner: pull the previous segment's end
-                            # frame in as this segment's start frame.
-                            self.start_copy = ui.button(
-                                icon='arrow_right',
-                                on_click=self._on_copy_prev_end,
-                            ).props('flat dense round color=white size=sm').style(
-                                'position: absolute; top: 4px; left: 4px;'
-                            )
-                            self.start_copy.visible = False
-                        self.start_upload = ui.upload(
-                            label='Start frame',
-                            auto_upload=True,
-                            on_upload=self._on_start_upload,
-                        ).props('dense').classes('w-full')
+                # Split the form into generation settings and rendering/editing
+                # info. Live status + actions stay always visible below the tabs,
+                # so status is readable and Generate is reachable from either tab.
+                with ui.tabs().classes('w-full') as self.inner_tabs:
+                    gen_tab = ui.tab('Generate')
+                    edit_tab = ui.tab('Edit')
 
-                    # ---- end frame column --------------------------------
-                    with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
-                        # Same relative wrapper as the start column so the corner
-                        # buttons have a stable anchor even before an end frame
-                        # exists (the image is hidden).
-                        with ui.element('div').style(
-                            'position: relative; width: 100%; min-height: 140px'
-                        ):
-                            self.end_thumb = ui.image().style(
-                                'width: 100%; height: 140px; '
-                                'background:#1a1a1e; border: 1px solid #34343c'
-                            ).props('fit=contain')
-                            self.end_thumb.visible = False
-                            self.end_delete = ui.button(
-                                icon='close',
-                                on_click=lambda: self._emit_remove_frame('end'),
-                            ).props('flat dense round color=white size=sm').style(
-                                'position: absolute; top: 4px; right: 4px;'
-                            )
-                            self.end_delete.visible = False
-                            # Top-left corner: duplicate this segment's start
-                            # frame into its end slot.
-                            self.end_copy = ui.button(
-                                icon='arrow_right',
-                                on_click=self._on_copy_start_to_end,
-                            ).props('flat dense round color=white size=sm').style(
-                                'position: absolute; top: 4px; left: 4px;'
-                            )
-                            self.end_copy.visible = False
-                        self.end_upload = ui.upload(
-                            label='End frame',
-                            auto_upload=True,
-                            on_upload=self._on_end_upload,
-                        ).props('dense').classes('w-full')
+                with ui.tab_panels(self.inner_tabs, value=gen_tab).classes('w-full'):
+                    # ---- Generate tab: generation settings --------------
+                    with ui.tab_panel(gen_tab):
+                        self.duration_input = ui.number(
+                            'Duration (s)', value=5, min=0, format='%.3f'
+                        ).props('dense outlined debounce=500 step=any').classes('w-32')
 
-                self.prompt_input = ui.textarea('Transition prompt').props(
-                    'dense outlined debounce=400'
-                ).classes('w-full')
+                        with ui.row().classes('w-full gap-3 items-start'):
+                            # ---- start frame column ------------------------------
+                            with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
+                                # Relative wrapper so the corner buttons can sit on the
+                                # thumbnail; min-height keeps them anchored even before a
+                                # start frame exists (the image is hidden).
+                                with ui.element('div').style(
+                                    'position: relative; width: 100%; min-height: 140px'
+                                ):
+                                    self.start_thumb = ui.image().style(
+                                        'width: 100%; height: 140px; '
+                                        'background:#1a1a1e; border: 1px solid #34343c'
+                                    ).props('fit=contain')
+                                    self.start_thumb.visible = False
+                                    self.start_delete = ui.button(
+                                        icon='close',
+                                        on_click=lambda: self._emit_remove_frame('start'),
+                                    ).props('flat dense round color=white size=sm').style(
+                                        'position: absolute; top: 4px; right: 4px;'
+                                    )
+                                    self.start_delete.visible = False
+                                    # Top-left corner: pull the previous segment's end
+                                    # frame in as this segment's start frame.
+                                    self.start_copy = ui.button(
+                                        icon='arrow_right',
+                                        on_click=self._on_copy_prev_end,
+                                    ).props('flat dense round color=white size=sm').style(
+                                        'position: absolute; top: 4px; left: 4px;'
+                                    )
+                                    self.start_copy.visible = False
+                                self.start_upload = ui.upload(
+                                    label='Start frame',
+                                    auto_upload=True,
+                                    on_upload=self._on_start_upload,
+                                ).props('dense').classes('w-full')
+
+                            # ---- end frame column --------------------------------
+                            with ui.column().classes('flex-1 items-center gap-1 min-w-0'):
+                                # Same relative wrapper as the start column so the corner
+                                # buttons have a stable anchor even before an end frame
+                                # exists (the image is hidden).
+                                with ui.element('div').style(
+                                    'position: relative; width: 100%; min-height: 140px'
+                                ):
+                                    self.end_thumb = ui.image().style(
+                                        'width: 100%; height: 140px; '
+                                        'background:#1a1a1e; border: 1px solid #34343c'
+                                    ).props('fit=contain')
+                                    self.end_thumb.visible = False
+                                    self.end_delete = ui.button(
+                                        icon='close',
+                                        on_click=lambda: self._emit_remove_frame('end'),
+                                    ).props('flat dense round color=white size=sm').style(
+                                        'position: absolute; top: 4px; right: 4px;'
+                                    )
+                                    self.end_delete.visible = False
+                                    # Top-left corner: duplicate this segment's start
+                                    # frame into its end slot.
+                                    self.end_copy = ui.button(
+                                        icon='arrow_right',
+                                        on_click=self._on_copy_start_to_end,
+                                    ).props('flat dense round color=white size=sm').style(
+                                        'position: absolute; top: 4px; left: 4px;'
+                                    )
+                                    self.end_copy.visible = False
+                                self.end_upload = ui.upload(
+                                    label='End frame',
+                                    auto_upload=True,
+                                    on_upload=self._on_end_upload,
+                                ).props('dense').classes('w-full')
+
+                        self.prompt_input = ui.textarea('Transition prompt').props(
+                            'dense outlined debounce=400'
+                        ).classes('w-full')
+
+                    # ---- Edit tab: rendering / editing info ---------------
+                    with ui.tab_panel(edit_tab):
+                        # Earlier takes of this segment (content-addressed, newest first) —
+                        # pick one to preview it.
+                        self.history_select = ui.select(
+                            options={},
+                            label='Earlier renders',
+                        ).props('dense outlined dark').classes('w-full')
+                        self.history_select.visible = False
+
+                # Always visible: live render status + primary actions (kept out of the
+                # tabs so they're reachable from either settings tab).
                 self.status_label = ui.label('Status: empty').classes('text-caption')
-                # Earlier takes of this segment (content-addressed, newest first) —
-                # pick one to preview it.
-                self.history_select = ui.select(
-                    options={},
-                    label='Earlier renders',
-                ).props('dense outlined dark').classes('w-full')
-                self.history_select.visible = False
                 with ui.row().classes('w-full gap-2'):
                     self.generate_button = ui.button(
                         'Generate', icon='movie', on_click=self._on_generate
@@ -148,6 +166,19 @@ class SegmentTab:
         # Setting ``history_select.value`` fires this (app.py guards on selection).
         self.history_select.on_value_change(self._emit_history_select)
         self.duration_input.on_value_change(self._emit_duration_change)
+        self.duration_input.on('keydown.up.prevent', lambda: self._step_duration(+1))
+        self.duration_input.on('keydown.down.prevent', lambda: self._step_duration(-1))
+
+
+    def _step_duration(self, direction: int) -> None:
+        """Arrow keys move the duration by exactly one frame."""
+        current = self.duration_input.value or 0
+        frames = max(1, round(current * self._fps) + direction)
+        self.duration_input.value = frames / self._fps
+
+    def set_duration(self, seconds: float) -> None:
+        """Reflect a (snapped) duration in the input."""
+        self.duration_input.value = seconds
 
     # -- internal emitters ------------------------------------------------
     def _emit_prompt_change(self, e) -> None:
@@ -219,7 +250,8 @@ class SegmentTab:
         ``show_start_copy``, ``show_end_copy``, ``duration``.
         """
         self.panel.visible = True
-
+        
+        self._fps = view.get('fps') or 24.0
         if view.get('duration') is not None:
             self.duration_input.value = view['duration']
 
