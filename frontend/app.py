@@ -284,7 +284,7 @@ def build_page() -> None:
                 left_tabs.set_value(project_tab)
                 segment_widget.hide()
                 no_selection_label.visible = True
-                preview_widget.clear('Click a video segment in the timeline.')
+                preview_widget.clear()
                 return
 
             segment_tab.visible = True
@@ -323,13 +323,13 @@ def build_page() -> None:
                 )
                 src = f'/api/projects/clips/{clip_name}'
                 if state['video_src'] != src:
-                    state['video_src'] = src
-                    preview_widget.show_clip(src, 'Rendered clip — press play to watch.')
+                    state['video_src'] = src 
+                    preview_widget.show_clip(src)
                 # Cap playback at the segment's duration (the rendered clip may be longer).
                 preview_widget.set_end(seg.duration_seconds)
             else:
                 state['video_src'] = None
-                preview_widget.clear('No rendered clip yet — render the segment to preview video here.')
+                preview_widget.clear()
 
         def refresh_status(seg_id: str) -> None:
             """Mirror a segment's render status onto its canvas block and, if it's the
@@ -456,7 +456,7 @@ def build_page() -> None:
             seg = current_segment()
             url = f'/api/projects/clips/{Path(path).name}'
             state['video_src'] = url
-            preview_widget.show_clip(url, 'Showing an earlier render — re-select the segment for the latest.')
+            preview_widget.show_clip(url)
             if seg is not None:
                 preview_widget.set_end(seg.duration_seconds)
 

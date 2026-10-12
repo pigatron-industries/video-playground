@@ -27,7 +27,6 @@ class PreviewTab:
             self._toolbar = ui.row().classes('items-center w-full no-wrap').style('gap: 4px')
             self._build_loop_btn()
             self.video_box = ui.column().classes('w-full')
-            self.status_label = ui.label(initial_message).classes('text-caption text-grey')
 
     def _build_loop_btn(self) -> None:
         """(Re)create the loop button with props matching the current state."""
@@ -80,7 +79,7 @@ class PreviewTab:
       }})();
     }})();''')
 
-    def show_clip(self, src: str, message: str) -> None:
+    def show_clip(self, src: str) -> None:
         """Replace the preview with a freshly-loaded video at ``src``.
 
         A cache-busting query string is appended so the browser fetches the new
@@ -94,10 +93,8 @@ class PreviewTab:
             if self._loop:
                 v.props('loop')
             self._video_el = v
-        self.status_label.text = message
 
-    def clear(self, message: str) -> None:
+    def clear(self) -> None:
         """Empty the preview and update the status caption."""
         self.video_box.clear()
         self._video_el = None
-        self.status_label.text = message
