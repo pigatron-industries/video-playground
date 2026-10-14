@@ -16,6 +16,8 @@ Page layout (three sections):
 """
 
 import asyncio
+import shutil
+import tempfile
 from pathlib import Path
 
 from nicegui import run, ui
@@ -24,6 +26,7 @@ from backend.models import RenderPlan, Segment
 from backend.plan_ops import (
     DEFAULT_DURATION,
     add_segment,
+    assign_clip,
     duplicate_segment,
     move_segment,
     remove_segment,
@@ -34,6 +37,7 @@ from backend.render import concat_segments
 from backend.storage import (
     active_folder,
     load_plan,
+    save_clip,
     save_image,
     save_plan,
     set_active_folder,
@@ -85,6 +89,32 @@ def segments_payload(plan: RenderPlan) -> list[dict]:
     count at its own fps): the canvas lays blocks out in pixels-per-second, so
     it needs seconds to get block widths right."""
     return [{'id': s.id, 'duration': s.duration_seconds} for s in plan.segments]
+
+
+def selection_target(ordered_ids: list[str], current_id: str | None, direction: int) -> str | None:
+    """Which segment an arrow-key press should select.
+
+    ``ordered_ids`` is the timeline's segments in order; ``current_id`` is the
+    selected segment (or None when nothing is); ``direction`` is +1 for right /
+    next and -1 for left / previous. Returns the id to select, or None when there
+    is no valid target — an empty timeline, a selection that is no longer on the
+    timeline, or already sitting at that boundary (so the selection stays put).
+
+    With nothing selected yet, right jumps to the first segment and left to the
+    last, so navigation works from any starting state."""
+    n = len(ordered_ids)
+    if n == 0:
+        return None
+    if current_id is None:
+        return ordered_ids[0] if direction > 0 else ordered_ids[-1]
+    try:
+        i = ordered_ids.index(current_id)
+    except ValueError:
+        return None
+    j = i + direction
+    if not (0 <= j < n):
+        return None
+    return ordered_ids[j]
 
 
 def build_page() -> None:
@@ -158,16 +188,16 @@ def build_page() -> None:
                     with ui.tab_panels(left_tabs, value=project_tab).style(
                         'flex: 1 1 auto; min-height: 0'
                     ).classes('w-full'):
-                        with ui.tab_panel(segment_tab):
+                        with ui.tab_panel(segment_tab).style('padding: 0px'):
                             segment_widget = SegmentTab(
                                 on_prompt_change=lambda value: on_seg_prompt_change(value),
                                 on_duration_change=lambda value: on_seg_duration_change(value),
                                 on_frame_upload=lambda which, e: handle_frame_upload(which, e),
+                                on_clip_upload=lambda e: handle_clip_upload(e),
                                 on_remove_frame=lambda which: remove_frame(which),
                                 on_copy_prev_end=lambda: copy_prev_end_frame(),
                                 on_copy_start_to_end=lambda: copy_start_to_end_frame(),
                                 on_generate=lambda: generate_selected_segment(),
-                                on_duplicate=lambda: duplicate_selected_segment(),
                                 on_history_select=lambda path: on_history_select(path),
                             )
 
@@ -427,6 +457,32 @@ def build_page() -> None:
         timeline.on('reorder', on_reorder)
 
         # ------------------------------------------------------------------
+        # Keyboard navigation — left/right arrows move the segment selection,
+        # regardless of which segment (or none) is currently selected.
+        # ------------------------------------------------------------------
+        def move_selection(direction: int) -> None:
+            """Arrow-key press: select the next (+1) / previous (-1) segment."""
+            if not is_open():
+                return
+            plan = load_plan()
+            target = selection_target([s.id for s in plan.segments], state['sel_id'], direction)
+            if target is None:
+                return  # empty timeline, stale selection, or already at a boundary
+            select(target)
+
+        def on_key(e) -> None:
+            if not e.action.keydown:
+                return
+            if e.key.arrow_right:
+                move_selection(+1)
+            elif e.key.arrow_left:
+                move_selection(-1)
+
+        # Global listener bound to this client. The default ignore list keeps the
+        # arrows from hijacking cursor movement while a form field is focused.
+        ui.keyboard(on_key=on_key)
+
+        # ------------------------------------------------------------------
         # Form -> state
         # ------------------------------------------------------------------
         def on_seg_duration_change(value) -> None:
@@ -497,6 +553,33 @@ def build_page() -> None:
             segment_widget.reset_upload(which)
             save_plan(load_plan())
             show_selection()
+
+        async def handle_clip_upload(e) -> None:
+            """Upload a video directly as this segment's clip — the alternative
+            to generating one from frames. Stored content-addressed in clips/
+            like rendered takes; the previous take moves to history."""
+            if not is_open():
+                ui.notify('Open a project folder before adding clips.', type='warning')
+                return
+            seg = current_segment()
+            if seg is None:
+                ui.notify('Select a video segment first.', type='warning')
+                return
+            # A queued/in-flight render would overwrite the upload when it lands.
+            if seg.status in ('queued', 'rendering'):
+                ui.notify('Wait for this segment to finish rendering first.', type='warning')
+                return
+            suffix = Path(e.name).suffix.lower() or '.mp4'
+            with tempfile.NamedTemporaryFile(prefix='clip-upload-', suffix=suffix) as tmp:
+                shutil.copyfileobj(e.content, tmp)
+                tmp.flush()  # save_clip reads the file from disk below
+                stored = await run.io_bound(save_clip, Path(tmp.name))
+            assign_clip(seg, str(stored))
+            segment_widget.reset_upload('clip')
+            save_plan(load_plan())
+            state['video_src'] = None  # force the preview to load the new clip
+            show_selection()
+            ui.notify("Uploaded as this segment's clip.", type='positive')
 
         def remove_frame(which: str) -> None:
             """Clear this segment's start/end frame slot and its uploader. Only the

@@ -21,21 +21,21 @@ class SegmentTab:
         *,
         on_prompt_change=None,
         on_frame_upload=None,
+        on_clip_upload=None,
         on_remove_frame=None,
         on_copy_prev_end=None,
         on_copy_start_to_end=None,
         on_generate=None,
-        on_duplicate=None,
         on_history_select=None,
         on_duration_change=None,
     ) -> None:
         self._on_prompt_change_cb = on_prompt_change
         self._on_frame_upload_cb = on_frame_upload
+        self._on_clip_upload_cb = on_clip_upload
         self._on_remove_frame_cb = on_remove_frame
         self._on_copy_prev_end_cb = on_copy_prev_end
         self._on_copy_start_to_end_cb = on_copy_start_to_end
         self._on_generate_cb = on_generate
-        self._on_duplicate_cb = on_duplicate
         self._on_history_select_cb = on_history_select
         self._on_duration_change_cb = on_duration_change
         self._fps = 24.0
@@ -49,8 +49,8 @@ class SegmentTab:
                 self.panel.visible = False
 
                 # Split the form into generation settings and rendering/editing
-                # info. Live status + actions stay always visible below the tabs,
-                # so status is readable and Generate is reachable from either tab.
+                # info. Each tab carries its own action toolbar; live render
+                # status stays visible below so it's readable from either tab.
                 with ui.tabs().classes('w-full') as self.inner_tabs:
                     gen_tab = ui.tab('Generate')
                     edit_tab = ui.tab('Edit')
@@ -58,6 +58,12 @@ class SegmentTab:
                 with ui.tab_panels(self.inner_tabs, value=gen_tab).classes('w-full'):
                     # ---- Generate tab: generation settings --------------
                     with ui.tab_panel(gen_tab):
+                        # Toolbar: the primary action for this tab (render it).
+                        with ui.row().classes('items-center w-full no-wrap').style('gap: 4px'):
+                            self.generate_button = ui.button(
+                                'Generate', icon='movie', on_click=self._on_generate
+                            )
+
                         self.duration_input = ui.number(
                             'Duration (s)', value=5, min=0, format='%.3f'
                         ).props('dense outlined debounce=500 step=any').classes('w-32')
@@ -139,6 +145,18 @@ class SegmentTab:
 
                     # ---- Edit tab: rendering / editing info ---------------
                     with ui.tab_panel(edit_tab):
+                        # Toolbar (reserved for edit-tab actions).
+                        with ui.row().classes('items-center w-full no-wrap').style('gap: 4px'):
+                            pass
+
+                        # Upload a video directly as this segment's clip — the
+                        # alternative to generating one from frames on the other tab.
+                        self.clip_upload = ui.upload(
+                            label='Upload video',
+                            auto_upload=True,
+                            on_upload=self._on_clip_upload,
+                        ).props('dense accept=.mp4,.mov,.m4v,.webm,.mkv,.avi').classes('w-full')
+
                         # Earlier takes of this segment (content-addressed, newest first) —
                         # pick one to preview it.
                         self.history_select = ui.select(
@@ -147,18 +165,8 @@ class SegmentTab:
                         ).props('dense outlined dark').classes('w-full')
                         self.history_select.visible = False
 
-                # Always visible: live render status + primary actions (kept out of the
-                # tabs so they're reachable from either settings tab).
+                # Always visible: live render status (applies to whichever tab is open).
                 self.status_label = ui.label('Status: empty').classes('text-caption')
-                with ui.row().classes('w-full gap-2'):
-                    self.generate_button = ui.button(
-                        'Generate', icon='movie', on_click=self._on_generate
-                    )
-                    # Insert a copy of this segment (prompt, frames and clip)
-                    # right after it, pushing later keyframes back to make room.
-                    self.duplicate_button = ui.button(
-                        'Duplicate', icon='content_copy', on_click=self._on_duplicate
-                    ).props('outline')
 
         # Setting ``prompt_input.value`` fires this; app.py no-ops when the value
         # already matches the segment, so loading a selection is safe.
@@ -199,6 +207,13 @@ class SegmentTab:
         if hasattr(result, '__await__'):
             await result
 
+    async def _on_clip_upload(self, e) -> None:
+        if self._on_clip_upload_cb is not None:
+            result = self._on_clip_upload_cb(e)
+            # app.py's handler awaits file I/O; run it.
+            if hasattr(result, '__await__'):
+                await result
+
     def _emit_remove_frame(self, which: str) -> None:
         if self._on_remove_frame_cb is not None:
             self._on_remove_frame_cb(which)
@@ -215,14 +230,6 @@ class SegmentTab:
         if self._on_generate_cb is not None:
             result = self._on_generate_cb()
             # generate_selected_segment is async; schedule it without blocking.
-            if hasattr(result, '__await__'):
-                import asyncio
-                asyncio.ensure_future(result)
-
-    def _on_duplicate(self) -> None:
-        if self._on_duplicate_cb is not None:
-            result = self._on_duplicate_cb()
-            # duplicate_selected_segment may be a coroutine; schedule it.
             if hasattr(result, '__await__'):
                 import asyncio
                 asyncio.ensure_future(result)
@@ -250,7 +257,7 @@ class SegmentTab:
         ``show_start_copy``, ``show_end_copy``, ``duration``.
         """
         self.panel.visible = True
-        
+
         self._fps = view.get('fps') or 24.0
         if view.get('duration') is not None:
             self.duration_input.value = view['duration']
@@ -288,8 +295,13 @@ class SegmentTab:
             self.generate_button.enable()
 
     def reset_upload(self, which: str) -> None:
-        """Clear a frame uploader's file list after its upload was handled."""
-        (self.start_upload if which == 'start' else self.end_upload).reset()
+        """Clear an uploader's file list after its upload was handled."""
+        uploads = {
+            'start': self.start_upload,
+            'end': self.end_upload,
+            'clip': self.clip_upload,
+        }
+        uploads[which].reset()
 
     def hide(self) -> None:
         self.panel.visible = False

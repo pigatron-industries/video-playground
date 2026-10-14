@@ -8,6 +8,7 @@ import requests
 from PIL import Image, ImageOps
 
 from backend.models import Segment
+from backend.plan_ops import assign_clip
 from backend.render import detect_fps
 from backend.storage import load_plan, project_dir, save_clip, save_plan
 
@@ -52,13 +53,7 @@ def run_generate(segment_id: str) -> None:
             segment.duration_frames = int(round(intended_seconds * detected_fps))
 
         # Keep the previous take reachable instead of overwriting it.
-        prev = segment.output_path
-        if prev and prev != str(out_path):
-            segment.history = [p for p in segment.history if p != str(out_path)]
-            segment.history.insert(0, prev)
-        segment.status = "done"
-        segment.output_path = str(out_path)
-        segment.error = None
+        assign_clip(segment, str(out_path))
     except Exception as exc:  # noqa: BLE001 — surface failure to the UI
         segment.status = "error"
         segment.error = str(exc)

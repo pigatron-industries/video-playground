@@ -85,3 +85,17 @@ def resize_segment(plan: RenderPlan, seg_id: str, duration: float) -> bool:
         return False
     seg.duration_frames = new_frames
     return True
+
+
+def assign_clip(seg: Segment, path: str) -> None:
+    """Make ``path`` this segment's current clip and mark it done — whether the
+    clip was rendered or uploaded. The previous take (if any) moves to the front
+    of its history so it stays reachable; assigning a path already in the
+    history doesn't duplicate it there."""
+    prev = seg.output_path
+    if prev and prev != path:
+        seg.history = [p for p in seg.history if p != path]
+        seg.history.insert(0, prev)
+    seg.status = 'done'
+    seg.error = None
+    seg.output_path = path
